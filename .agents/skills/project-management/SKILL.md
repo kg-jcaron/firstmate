@@ -38,6 +38,16 @@ The optional `+yolo` posture changes routine approval authority but does not cha
 Default it off, and enable it only on the captain's explicit instruction.
 Destructive, irreversible, and security-sensitive decisions still require captain approval when it is on.
 
+## Project delivery-workflow notes
+
+Some projects ship through a custom delivery workflow that the three delivery modes above do not capture: a mandatory local dev-server visual preview, a draft-PR-first step, a stage-branch merge, or similar captain-directed process.
+Record that workflow in a fleet-private note at `data/project-flows/<project-name>.md`, keyed by the bare project name.
+This is the single source of truth for the project's custom flow.
+When such a note exists, `bin/fm-brief.sh` injects its full contract into every ship brief for that project ahead of the Definition of done and `bin/fm-spawn.sh` prints a loud dispatch reminder, both driven by the note on disk (`bin/fm-project-flow-lib.sh`) so the contract reaches the crewmate regardless of how the session started - do not rely on a prose reminder in `data/learnings.md`, which a `/bearings` or resumed session never loads.
+Keep the canonical contract in the note and leave only a one-line pointer wherever it used to live, so the injected brief and the human-readable record never drift.
+Write the note in inspect-then-update style like the other curated `data/` records, and update it whenever the captain changes the flow.
+See [docs/configuration.md](../../../docs/configuration.md) for the convention and the header of `bin/fm-project-flow-lib.sh` for the exact path and gating.
+
 ## Add or clone an existing project
 
 Confirm the source URL, local project name, delivery mode, and autonomy posture.

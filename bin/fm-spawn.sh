@@ -79,6 +79,9 @@
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
+# For a ship task whose project has a fleet-private custom delivery-workflow note
+# (bin/fm-project-flow-lib.sh; data/project-flows/<name>.md), a loud CUSTOM_FLOW:
+# reminder is also printed to stderr at dispatch.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -108,6 +111,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-project-flow-lib.sh
+. "$SCRIPT_DIR/fm-project-flow-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1055,5 +1060,14 @@ sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
 spawn_send_key "$T" Enter
+
+# Custom delivery-workflow dispatch reminder (bin/fm-project-flow-lib.sh). For a
+# ship task whose project has a fleet-private custom-flow note, print a loud
+# stderr reminder at dispatch. The brief already carries the full contract; this
+# is the unmissable at-dispatch signal, and it fires from the note on disk, not
+# from firstmate remembering to read data/learnings.md first.
+if [ "$KIND" = ship ]; then
+  fm_project_flow_reminder "$DATA" "$PROJ_ABS" >&2 || true
+fi
 
 echo "spawned $ID harness=$HARNESS kind=$KIND mode=$MODE yolo=$YOLO window=$META_WINDOW worktree=$WT"
