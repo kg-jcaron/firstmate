@@ -10,7 +10,7 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
-`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, and scout reports.
+`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, per-project custom delivery-workflow notes, backlog, briefs, and scout reports.
 `state/` holds volatile runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, away-mode state, and generated X-mode artifacts.
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the guarded exceptions in `AGENTS.md`.
 
@@ -120,6 +120,16 @@ Shared captain preferences that apply across secondmate domains live only in the
 Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed after the captain-preference files in the session-start context digest.
 The file is created lazily on first learning and follows the same dated, evidence-backed, curated style as `data/captain.md`: inspect the current file first, then rewrite or prune stale entries instead of appending forever.
 There is no shared learnings file by captain decision.
+
+## Project delivery-workflow notes (data/project-flows/<name>.md)
+
+A project whose delivery differs from firstmate's default no-mistakes-to-PR pipeline (for example a mandatory local dev-server visual preview, a draft-PR-first step, or a stage-branch merge) records that custom workflow in a fleet-private note at `data/project-flows/<project-name>.md`, keyed by the bare project name.
+This directory sits under the wholesale-gitignored `data/`, so the shared template carries only the mechanism, never the list of which projects have custom flows; the existence of a non-empty note is itself the marker that a project is custom-flow.
+[`bin/fm-project-flow-lib.sh`](../bin/fm-project-flow-lib.sh) is the single owner of the path convention, existence gating, and the loud dispatch-reminder text.
+When `bin/fm-brief.sh` scaffolds a ship brief for a project with a note, it injects the note's full contract ahead of the Definition of done and marks it as superseding the generic delivery-mode instructions; `bin/fm-spawn.sh` also prints a loud `CUSTOM_FLOW:` reminder at dispatch.
+Both are driven by the note on disk, so the contract reaches the crewmate regardless of how the dispatching session started - a full session start, `/bearings`, `/clear`, or a post-compaction resume all deliver it identically, without depending on `data/learnings.md` having been loaded.
+The note is the single source of truth for a project's custom delivery workflow; keep the canonical contract here and leave only a one-line pointer wherever it previously lived (typically `data/learnings.md`), so the injected brief and the human-readable record never drift.
+The [`project-management` skill](../.agents/skills/project-management/SKILL.md#project-delivery-workflow-notes) owns firstmate's guidance for authoring and maintaining these notes.
 
 ## Secondmate routes (data/secondmates.md)
 

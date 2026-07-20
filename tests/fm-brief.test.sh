@@ -289,6 +289,96 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
   pass "fm-brief.sh: custom pause verb renders in every scaffold"
 }
 
+# A ship brief for a project WITH a fleet-private custom-flow note must carry the
+# note's full contract, marked as superseding the default, and must NOT depend on
+# data/learnings.md having been loaded. The note body is captain free text, so it
+# also exercises the verbatim-injection safety: backticks, "$" and a literal EOF
+# line in the note must survive into the brief unexecuted.
+test_custom_flow_note_injected_into_ship_brief() {
+  local home id brief note
+  home="$TMP_ROOT/custom-flow-home"
+  mkdir -p "$home/data/project-flows"
+  note="$home/data/project-flows/flowproj.md"
+  cat > "$note" <<'EOF'
+Custom stage flow for flowproj:
+1. Gate green, then start the dev server (`cd web && pnpm dev`) for the local visual preview owed to the captain.
+2. Push the branch and open a DRAFT PR first, before the local review.
+3. On approval, merge to `stage_builds` and watch the $DEPLOY run.
+EOF
+  id="brief-custom-flow-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow ship brief was not scaffolded"
+  assert_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+    "custom-flow brief missing the mandatory-flow heading"
+  assert_grep "SUPERSEDES the default" "$brief" \
+    "custom-flow brief did not mark the flow as superseding the default"
+  assert_grep "local visual preview owed to the captain" "$brief" \
+    "custom-flow brief lost the dev-server preview step from the note"
+  assert_grep "open a DRAFT PR first" "$brief" \
+    "custom-flow brief lost the draft-PR-first step from the note"
+  assert_grep "merge to \`stage_builds\`" "$brief" \
+    "custom-flow brief lost the stage-merge step from the note"
+  # Verbatim safety: the note's own backticks / "$" survive unexecuted.
+  # shellcheck disable=SC2016 # Literal "$DEPLOY" must stay unexpanded - that is the assertion.
+  assert_grep 'watch the $DEPLOY run' "$brief" \
+    "custom-flow brief re-evaluated a \"\$\" in the note body instead of writing it verbatim"
+  # The generic Definition of done still follows the injected section.
+  assert_grep "# Definition of done" "$brief" \
+    "custom-flow brief dropped its Definition of done section"
+  pass "fm-brief.sh: custom-flow note is injected verbatim and marked as superseding"
+}
+
+# A project WITHOUT a note must scaffold exactly as today: no injected section,
+# no leaked heading, and the generic Definition of done intact.
+test_no_custom_flow_note_scaffolds_unchanged() {
+  local home id brief
+  home="$TMP_ROOT/no-custom-flow-home"
+  mkdir -p "$home/data"
+  id="brief-no-custom-flow-e2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" plainproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "plain ship brief was not scaffolded"
+  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+    "plain brief leaked a custom-flow section with no note present"
+  assert_no_grep "SUPERSEDES the default" "$brief" \
+    "plain brief leaked custom-flow supersession wording with no note present"
+  assert_grep "# Definition of done" "$brief" \
+    "plain brief lost its Definition of done section"
+  pass "fm-brief.sh: a project with no custom-flow note scaffolds unchanged"
+}
+
+# An empty note file is not a marker: it must not inject an empty mandatory
+# section, so the brief scaffolds exactly as the no-note case.
+test_empty_custom_flow_note_is_not_a_marker() {
+  local home id brief
+  home="$TMP_ROOT/empty-custom-flow-home"
+  mkdir -p "$home/data/project-flows"
+  : > "$home/data/project-flows/emptyproj.md"
+  id="brief-empty-custom-flow-e3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" emptyproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+    "an empty note wrongly injected a custom-flow section"
+  pass "fm-brief.sh: an empty custom-flow note is treated as absent"
+}
+
+# A scout for a custom-flow project produces a report, not a delivery, so it must
+# NOT carry the delivery-workflow contract even when the note exists.
+test_scout_does_not_inject_custom_flow() {
+  local home id brief
+  home="$TMP_ROOT/scout-custom-flow-home"
+  mkdir -p "$home/data/project-flows"
+  printf 'Custom stage flow marker line.\n' > "$home/data/project-flows/flowproj.md"
+  id="brief-scout-custom-flow-e4"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "scout brief was not scaffolded"
+  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+    "scout brief wrongly injected the ship delivery-workflow contract"
+  pass "fm-brief.sh: a scout never carries the ship custom-flow contract"
+}
+
 test_scout_and_secondmate_load_decision_hold_policy() {
   local home scout charter
   home="$TMP_ROOT/decision-policy-home"
@@ -320,4 +410,8 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_pause_verb_override_renders_all_brief_scaffolds
+test_custom_flow_note_injected_into_ship_brief
+test_no_custom_flow_note_scaffolds_unchanged
+test_empty_custom_flow_note_is_not_a_marker
+test_scout_does_not_inject_custom_flow
 test_scout_and_secondmate_load_decision_hold_policy

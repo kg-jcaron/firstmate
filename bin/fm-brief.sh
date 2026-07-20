@@ -34,6 +34,12 @@
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# When the project has a fleet-private custom delivery-workflow note (see
+# bin/fm-project-flow-lib.sh; data/project-flows/<name>.md), its full contract is
+# injected into the ship brief ahead of the Definition of done and explicitly
+# supersedes the generic delivery-mode instructions, so the crewmate follows the
+# custom flow regardless of how the dispatching session started. A project with
+# no note scaffolds exactly as before.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
@@ -65,6 +71,8 @@ esac
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-project-flow-lib.sh
+. "$SCRIPT_DIR/fm-project-flow-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
@@ -326,6 +334,21 @@ EOF
     ;;
 esac
 
+# Custom delivery-workflow injection (bin/fm-project-flow-lib.sh). When the
+# project has a fleet-private note, prepend its full contract to the Definition
+# of done so it reaches the crewmate no matter how the dispatching session
+# started. The note body is read into a variable and expanded once inside the
+# final heredoc, so its own backticks, "$" and any literal EOF line are written
+# verbatim, never re-evaluated. A project with no note leaves $DOD byte-identical.
+if FLOW_NOTE=$(fm_project_flow_note "$DATA" "$REPO"); then
+  FLOW_BODY=$(cat "$FLOW_NOTE")
+  FLOW_LEAD='# Project delivery workflow - MANDATORY custom flow (SUPERSEDES the default below)
+This project ships through a custom delivery workflow. Follow the contract in this section exactly.
+It OVERRIDES any conflicting delivery-mode, push, PR, or "Definition of done" instruction elsewhere in this brief: where they disagree, this section wins.
+This contract is the project'"'"'s single source of truth, injected here so it reaches you regardless of how this task was dispatched - do not go looking for it elsewhere, and do not fall back to the default no-mistakes-to-PR pipeline unless this section tells you to.'
+  DOD=$(printf '%s\n\n%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY" "$DOD")
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -375,4 +398,4 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
+echo "scaffolded: $BRIEF (ship, mode=$MODE${FLOW_NOTE:+, custom-flow}; replace {TASK})"
