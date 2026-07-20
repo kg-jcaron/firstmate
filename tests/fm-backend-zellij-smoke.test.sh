@@ -49,7 +49,14 @@ fm_backend_source zellij || fail "fm_backend_source zellij failed"
 
 # --- version gate + container ensure -----------------------------------------
 
-fm_backend_zellij_version_check || fail "version_check failed against the real installed zellij"
+if ! fm_backend_zellij_version_check 2>/dev/null; then
+  # A below-minimum zellij is an environmental precondition, not a smoke
+  # failure: the version gate itself is unit-tested in
+  # tests/fm-backend-zellij.test.sh. Skip cleanly, exactly like an absent
+  # zellij/jq above, so machines with an old zellij are unaffected.
+  echo "skip: installed zellij is older than the verified minimum required by the adapter"
+  exit 0
+fi
 pass "real zellij: version_check accepts the installed binary's version"
 
 CONTAINER=$(fm_backend_zellij_container_ensure) || fail "container_ensure failed"
