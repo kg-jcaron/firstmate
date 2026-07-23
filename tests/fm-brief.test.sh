@@ -409,6 +409,69 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# --promote writes ship instructions to a sibling promote.md (leaving the scout's
+# brief.md intact), applies the SAME custom-flow injection as a fresh ship brief,
+# and replaces the fresh-clone Setup with the scratch-to-clean-base promotion Setup.
+test_promote_flag_writes_promote_md_with_flow_and_promotion_setup() {
+  local home id brief note
+  home="$TMP_ROOT/promote-flag-home"
+  mkdir -p "$home/data/project-flows"
+  note="$home/data/project-flows/flowproj.md"
+  cat > "$note" <<'EOF'
+Custom stage flow for flowproj:
+1. Start the dev server for the local visual preview owed to the captain.
+EOF
+  # The scout's original brief.md must survive the promotion untouched.
+  mkdir -p "$home/data/promote-f1"
+  printf 'original scout brief\n' > "$home/data/promote-f1/brief.md"
+  id="promote-f1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj --promote >/dev/null 2>&1
+  brief="$home/data/$id/promote.md"
+  assert_present "$brief" "--promote did not scaffold promote.md"
+  assert_grep "original scout brief" "$home/data/$id/brief.md" \
+    "--promote overwrote the scout's original brief.md"
+  assert_grep "# Setup - promotion from scout to ship" "$brief" \
+    "--promote brief missing the promotion Setup heading"
+  assert_grep "Inventory your scratch state" "$brief" \
+    "--promote brief missing the scratch-inventory step"
+  assert_no_grep "at a detached HEAD on a clean default branch" "$brief" \
+    "--promote brief kept the fresh-clone Setup text"
+  assert_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+    "--promote brief did not inject the custom-flow contract"
+  assert_grep "local visual preview owed to the captain" "$brief" \
+    "--promote brief lost the note body"
+  pass "fm-brief.sh: --promote writes promote.md with promotion Setup and custom-flow injection"
+}
+
+# --promote on a no-note project scaffolds the generic instructions unchanged.
+test_promote_flag_no_note_scaffolds_generic() {
+  local home id brief
+  home="$TMP_ROOT/promote-flag-plain-home"
+  mkdir -p "$home/data"
+  id="promote-f2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" plainproj --promote >/dev/null 2>&1
+  brief="$home/data/$id/promote.md"
+  assert_present "$brief" "--promote did not scaffold promote.md for a no-note project"
+  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+    "--promote no-note brief leaked a custom-flow section"
+  assert_grep "# Definition of done" "$brief" \
+    "--promote no-note brief lost its Definition of done section"
+  pass "fm-brief.sh: --promote on a no-note project scaffolds generic instructions"
+}
+
+# --promote applies only to ship briefs, never scout or secondmate.
+test_promote_flag_rejects_scout_and_secondmate() {
+  local home status
+  home="$TMP_ROOT/promote-flag-guard-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" ps1 repo --scout --promote >/dev/null 2>&1; status=$?
+  expect_code 1 "$status" "--promote with --scout must fail"
+  assert_absent "$home/data/ps1/promote.md" "rejected --promote --scout still wrote a file"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER=x "$ROOT/bin/fm-brief.sh" ps2 --secondmate --no-projects --promote >/dev/null 2>&1; status=$?
+  expect_code 1 "$status" "--promote with --secondmate must fail"
+  pass "fm-brief.sh: --promote is rejected for scout and secondmate briefs"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -446,4 +509,7 @@ test_no_custom_flow_note_scaffolds_unchanged
 test_empty_custom_flow_note_is_not_a_marker
 test_scout_does_not_inject_custom_flow
 test_scout_and_secondmate_load_decision_hold_policy
+test_promote_flag_writes_promote_md_with_flow_and_promotion_setup
+test_promote_flag_no_note_scaffolds_generic
+test_promote_flag_rejects_scout_and_secondmate
 test_scout_and_secondmate_scaffold

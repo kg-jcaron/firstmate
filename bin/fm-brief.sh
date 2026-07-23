@@ -6,10 +6,18 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--promote] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
+#   --promote writes mode-specific ship instructions for a scout being promoted in
+#   place (bin/fm-promote.sh) to data/<task-id>/promote.md instead of brief.md. The
+#   Setup section directs the crewmate to inventory its scratch scout state, return
+#   to a clean default-branch base carrying only the intended fix (a reproduced bug
+#   becomes the regression test), and create the ship branch; the delivery-mode
+#   Definition of done and any custom delivery-workflow injection are identical to a
+#   fresh ship dispatch, so a promoted scout on a custom-flow project follows the
+#   same injected flow. --promote applies only to ship briefs.
 #   --secondmate writes a persistent secondmate charter. The project list
 #   is cloned into the secondmate home, while the natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
@@ -81,6 +89,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+PROMOTE=0
 POS=()
 for a in "$@"; do
   case "$a" in
@@ -88,6 +97,7 @@ for a in "$@"; do
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
+    --promote) PROMOTE=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -98,12 +108,21 @@ if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   exit 1
 fi
 
+if [ "$PROMOTE" -eq 1 ] && [ "$KIND" != ship ]; then
+  echo "error: --promote applies only to ship briefs" >&2
+  exit 1
+fi
+
 if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   echo "error: --no-projects applies only to --secondmate charters" >&2
   exit 1
 fi
 
-BRIEF="$DATA/$ID/brief.md"
+# A promotion writes its ship instructions to a sibling promote.md so the scout's
+# original brief.md is left intact for the record.
+BRIEF_NAME=brief.md
+[ "$PROMOTE" -eq 1 ] && BRIEF_NAME=promote.md
+BRIEF="$DATA/$ID/$BRIEF_NAME"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 mkdir -p "$DATA/$ID"
 
@@ -283,6 +302,9 @@ read -r MODE _ <<EOF
 $("$FM_ROOT/bin/fm-project-mode.sh" "$REPO")
 EOF
 
+# NM_INIT_LINE is the single owner of the no-mistakes doctor/init instruction; both
+# the fresh and promote Setup sections place it (at a different list number).
+NM_INIT_LINE=""
 case "$MODE" in
   direct-PR)
     SETUP2=""
@@ -310,8 +332,10 @@ EOF
 )
     ;;
   *)  # no-mistakes (default)
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown that must reach the reading agent verbatim, not run as a command at scaffold time.
+    NM_INIT_LINE='Run `no-mistakes doctor`; if it reports the repo is not initialized here, run `no-mistakes init`.'
     SETUP2="
-2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
+2. $NM_INIT_LINE"
     RULE1='1. Never push to the default branch. Never merge a PR.'
     DOD=$(cat <<EOF
 # Definition of done
@@ -349,14 +373,30 @@ This contract is the project'"'"'s single source of truth, injected here so it r
   DOD=$(printf '%s\n\n%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY" "$DOD")
 fi
 
-cat > "$BRIEF" <<EOF
-You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+# Setup section. A fresh ship dispatch lands in a clean disposable worktree; a
+# promotion (--promote) reuses the scout's worktree, so it must first turn that
+# scratch state into a clean ship base. Everything after Setup (Rules, project
+# memory, and the flow-injected Definition of done) is shared, so both variants
+# reach the crewmate through the same single heredoc below.
+if [ "$PROMOTE" -eq 1 ]; then
+  SETUP2_PROMOTE=""
+  [ -n "$NM_INIT_LINE" ] && SETUP2_PROMOTE="
+4. $NM_INIT_LINE"
+  SETUP_SECTION=$(cat <<EOF
+# Setup - promotion from scout to ship
+You investigated this task as a scout and keep this same worktree with its loaded context; it now holds scratch state from that investigation (experiments, debug edits, throwaway commits).
+This task now ships a change through the delivery flow below, so first turn that scratch worktree into a clean ship base.
 
-# Task
-{TASK}
+**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, not the primary checkout firstmate operates from.
+If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
-$HERDR_SECTION
-
+1. Inventory your scratch state: run \`git status\` and \`git log --oneline\` so you know exactly what you changed while scouting.
+2. Return to a clean base off the current default branch, carrying over ONLY the intended fix changes. Scratch commits, debug edits, and throwaway experiments must NOT ride along, and a bug you reproduced while scouting becomes the regression test for this fix.
+3. Once the base is clean, create your ship branch: \`git checkout -b fm/$ID\`.$SETUP2_PROMOTE
+EOF
+)
+else
+  SETUP_SECTION=$(cat <<EOF
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 
@@ -365,6 +405,19 @@ The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+EOF
+)
+fi
+
+cat > "$BRIEF" <<EOF
+You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+
+# Task
+{TASK}
+
+$HERDR_SECTION
+
+$SETUP_SECTION
 
 # Rules
 $RULE1
@@ -398,4 +451,8 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE${FLOW_NOTE:+, custom-flow}; replace {TASK})"
+if [ "$PROMOTE" -eq 1 ]; then
+  echo "scaffolded: $BRIEF (promote scout->ship, mode=$MODE${FLOW_NOTE:+, custom-flow}; replace {TASK})"
+else
+  echo "scaffolded: $BRIEF (ship, mode=$MODE${FLOW_NOTE:+, custom-flow}; replace {TASK})"
+fi
