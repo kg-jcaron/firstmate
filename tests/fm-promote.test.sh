@@ -135,6 +135,13 @@ test_promote_preserves_promotion_guarantees() {
   # shellcheck disable=SC2016 # Literal backticks/branch name are brief markdown.
   assert_grep 'create your ship branch: `git checkout -b fm/promote-guarantees-a3`' "$brief" \
     "promotion brief lost the ship-branch creation step"
+  # The promotion brief is self-contained: no literal {TASK} placeholder survives,
+  # and the Task section points at the scout's own brief.md and report.md.
+  # shellcheck disable=SC2016 # Literal {TASK} is the placeholder we assert is absent.
+  assert_no_grep '{TASK}' "$brief" \
+    "promotion brief left an unsubstituted {TASK} placeholder"
+  assert_grep "recorded in $home/data/$id/brief.md and $home/data/$id/report.md" "$brief" \
+    "promotion brief lost the self-contained pointer to the scout's brief.md and report.md"
   pass "fm-promote.sh: promotion guarantees survive in the generated instructions"
 }
 

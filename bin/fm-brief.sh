@@ -17,7 +17,9 @@
 #   becomes the regression test), and create the ship branch; the delivery-mode
 #   Definition of done and any custom delivery-workflow injection are identical to a
 #   fresh ship dispatch, so a promoted scout on a custom-flow project follows the
-#   same injected flow. --promote applies only to ship briefs.
+#   same injected flow. A --promote brief is self-contained: its Task section points
+#   at the scout's own brief.md and report.md, so unlike a fresh ship brief it carries
+#   no {TASK} placeholder and needs no substitution. --promote applies only to ship briefs.
 #   --secondmate writes a persistent secondmate charter. The project list
 #   is cloned into the secondmate home, while the natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
@@ -238,6 +240,13 @@ HERDR_SECTION=$(printf '%s\n' \
 '' \
 'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.' \
 'The captain fleet uses the running `default` session.')
+elif [ "$PROMOTE" -eq 1 ]; then
+# shellcheck disable=SC2016  # backticks in these lines are literal brief markdown, not command substitution.
+HERDR_SECTION=$(printf '%s\n' \
+'# Herdr lifecycle declaration - NOT ENABLED' \
+"**HARD SAFETY GATE:** this scaffold cannot inspect the task text recorded in the scout's brief.md and report.md." \
+'If the task will start, stop, delete, restart, profile, or otherwise drive Herdr lifecycle behavior, stop and regenerate the brief with `--herdr-lab` before dispatch.' \
+'Do not add Herdr lifecycle commands to this unguarded brief by hand.')
 else
 HERDR_SECTION=$(cat <<'EOF'
 # Herdr lifecycle declaration - NOT ENABLED
@@ -409,11 +418,22 @@ EOF
 )
 fi
 
+# Task section. A fresh ship dispatch keeps the {TASK} placeholder for firstmate
+# to fill in by hand; a promotion (--promote) is self-contained and points the
+# crewmate at the scout's own brief.md and report.md, so no {TASK} survives.
+if [ "$PROMOTE" -eq 1 ]; then
+  TASK_SECTION="# Task
+This ships the fix identified while investigating this task as a scout.
+Your original task description and investigation findings are recorded in $DATA/$ID/brief.md and $DATA/$ID/report.md; re-read them if you need the full task context."
+else
+  TASK_SECTION='# Task
+{TASK}'
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
-{TASK}
+$TASK_SECTION
 
 $HERDR_SECTION
 
@@ -452,7 +472,7 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 $DOD
 EOF
 if [ "$PROMOTE" -eq 1 ]; then
-  echo "scaffolded: $BRIEF (promote scout->ship, mode=$MODE${FLOW_NOTE:+, custom-flow}; replace {TASK})"
+  echo "scaffolded: $BRIEF (promote scout->ship, mode=$MODE${FLOW_NOTE:+, custom-flow})"
 else
   echo "scaffolded: $BRIEF (ship, mode=$MODE${FLOW_NOTE:+, custom-flow}; replace {TASK})"
 fi

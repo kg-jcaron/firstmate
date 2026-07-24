@@ -440,6 +440,13 @@ EOF
     "--promote brief did not inject the custom-flow contract"
   assert_grep "local visual preview owed to the captain" "$brief" \
     "--promote brief lost the note body"
+  # The --promote brief is self-contained: no {TASK} placeholder, and the Task
+  # section points at the scout's own brief.md and report.md.
+  # shellcheck disable=SC2016 # Literal {TASK} is the placeholder we assert is absent.
+  assert_no_grep '{TASK}' "$brief" \
+    "--promote brief left an unsubstituted {TASK} placeholder"
+  assert_grep "recorded in $home/data/$id/brief.md and $home/data/$id/report.md" "$brief" \
+    "--promote brief lost the self-contained pointer to the scout's brief.md and report.md"
   pass "fm-brief.sh: --promote writes promote.md with promotion Setup and custom-flow injection"
 }
 
