@@ -55,6 +55,12 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Ship and scout Rules carry the verbose-output convention: redirect noisy command
+# output to the task's temp root (bin/fm-tasktmp-lib.sh owns the path; fm-spawn
+# creates it and teardown removes it) and report the extracted signal rather than
+# the transcript. Secondmate charters omit it, because a charter is a standing role
+# description for a home that delegates project work to its own crewmates, and each
+# of those crewmates gets the rule through its own brief.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -83,6 +89,8 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-project-flow-lib.sh
 . "$SCRIPT_DIR/fm-project-flow-lib.sh"
+# shellcheck source=bin/fm-tasktmp-lib.sh
+. "$SCRIPT_DIR/fm-tasktmp-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
@@ -218,6 +226,11 @@ fi
 
 REPO=${POS[1]}
 
+# The task's disposable temp root (bin/fm-tasktmp-lib.sh). fm-spawn creates it
+# before launching the agent and teardown removes it, so the brief can name it
+# even though this scaffold runs first. Crewmate briefs only: see the header.
+TASK_TMP=$(fm_task_tmp_dir "$ID")
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -293,6 +306,10 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+8. Send verbose command output to a file under \`$TASK_TMP/\` instead of printing it whole -
+   dependency installs, full builds, test suites, linters, and CI log fetches. Inspect it with
+   \`grep\`, \`tail\`, or a targeted read, and report the extracted signal (the failing test, the
+   error line, the count), not the transcript.
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -461,6 +478,10 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+8. Send verbose command output to a file under \`$TASK_TMP/\` instead of printing it whole -
+   dependency installs, full builds, test suites, linters, and CI log fetches. Inspect it with
+   \`grep\`, \`tail\`, or a targeted read, and report the extracted signal (the failing test, the
+   error line, the count), not the transcript.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

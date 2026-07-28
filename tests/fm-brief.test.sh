@@ -479,6 +479,57 @@ test_promote_flag_rejects_scout_and_secondmate() {
   pass "fm-brief.sh: --promote is rejected for scout and secondmate briefs"
 }
 
+# Every crewmate brief must carry the verbose-output convention, and it must name
+# the task temp root through the shared owner (bin/fm-tasktmp-lib.sh) rather than
+# a second literal that could drift from the one fm-spawn actually creates. The
+# secondmate charter deliberately omits the rule: a charter is a standing role
+# description for a home that delegates project work to its own crewmates, and
+# each of those crewmates gets the rule through its own brief.
+test_verbose_output_convention_in_crewmate_briefs() {
+  local home id proj brief kind_args fname expected_tmp entry rule_lines
+  home="$TMP_ROOT/verbose-output-home"
+  write_registry "$home"
+
+  # Source the owner so the test asserts against the same path fm-spawn uses.
+  # shellcheck source=bin/fm-tasktmp-lib.sh
+  . "$ROOT/bin/fm-tasktmp-lib.sh"
+
+  for entry in \
+    "brief-verbose-nm:no-registry-proj::brief.md" \
+    "brief-verbose-dpr:direct-proj::brief.md" \
+    "brief-verbose-lo:local-proj::brief.md" \
+    "brief-verbose-scout:some-proj:--scout:brief.md" \
+    "brief-verbose-promote:some-proj:--promote:promote.md"
+  do
+    IFS=: read -r id proj kind_args fname <<<"$entry"
+    # shellcheck disable=SC2086  # kind_args is a deliberate optional single flag
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" $kind_args >/dev/null 2>&1 \
+      || fail "$id: fm-brief.sh exited non-zero"
+    brief="$home/data/$id/$fname"
+    assert_present "$brief" "$id: brief was not scaffolded"
+    expected_tmp=$(fm_task_tmp_dir "$id")
+    assert_grep "Send verbose command output to a file under \`$expected_tmp/\`" "$brief" \
+      "$id: brief missing the verbose-output convention pointing at the shared task temp root"
+    assert_grep "dependency installs, full builds, test suites, linters, and CI log fetches" "$brief" \
+      "$id: verbose-output convention lost its list of the usual offenders"
+    assert_grep "report the extracted signal (the failing test, the" "$brief" \
+      "$id: verbose-output convention lost the report-the-signal instruction"
+  done
+
+  # The convention must stay short: it lands in every dispatch, so every line costs
+  # tokens on every spawn. Pin the budget so it cannot grow into a tutorial.
+  rule_lines=$(awk '/^8\. Send verbose command output/,/^$/' "$home/data/brief-verbose-nm/brief.md" | grep -c .)
+  [ "$rule_lines" -le 5 ] \
+    || fail "verbose-output convention grew to $rule_lines lines; keep it at 5 or fewer"
+
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-verbose-sm --secondmate alpha >/dev/null 2>&1 \
+    || fail "secondmate charter scaffold exited non-zero"
+  assert_no_grep "Send verbose command output" "$home/data/brief-verbose-sm/brief.md" \
+    "secondmate charter must not carry the crewmate verbose-output convention"
+  pass "fm-brief.sh: ship/scout/promote briefs carry the verbose-output convention, charters do not"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -519,4 +570,5 @@ test_scout_and_secondmate_load_decision_hold_policy
 test_promote_flag_writes_promote_md_with_flow_and_promotion_setup
 test_promote_flag_no_note_scaffolds_generic
 test_promote_flag_rejects_scout_and_secondmate
+test_verbose_output_convention_in_crewmate_briefs
 test_scout_and_secondmate_scaffold

@@ -207,7 +207,40 @@ test_teardown_skips_gracefully_when_dir_missing() {
   pass "fm-teardown skips gracefully when tasktmp= points to a nonexistent dir"
 }
 
+# --- shared path owner (bin/fm-tasktmp-lib.sh) ---
+
+# fm-brief names the task temp root in the generated brief a step BEFORE fm-spawn
+# creates it, so both must read the path from one owner. If either script grows
+# its own literal, a brief will point crewmates at a directory spawn never made.
+test_tasktmp_path_has_one_owner() {
+  local lib="$ROOT/bin/fm-tasktmp-lib.sh"
+  [ -f "$lib" ] || fail "bin/fm-tasktmp-lib.sh is missing"
+
+  # Both consumers must source the owner and call it, not restate the literal.
+  for consumer in fm-spawn.sh fm-brief.sh; do
+    grep -F 'fm-tasktmp-lib.sh' "$ROOT/bin/$consumer" >/dev/null \
+      || fail "bin/$consumer does not source bin/fm-tasktmp-lib.sh"
+    # shellcheck disable=SC2016  # single quotes are deliberate: literal source string
+    grep -F 'fm_task_tmp_dir "$ID"' "$ROOT/bin/$consumer" >/dev/null \
+      || fail "bin/$consumer does not resolve the temp root through fm_task_tmp_dir"
+    # shellcheck disable=SC2016  # single quotes are deliberate: literal source string
+    if grep -F '"/tmp/fm-$ID"' "$ROOT/bin/$consumer" >/dev/null; then
+      fail "bin/$consumer restates the /tmp/fm-<id> literal instead of using the owner"
+    fi
+  done
+
+  # The owner itself must produce the path teardown's recorded tasktmp= round-trips.
+  # shellcheck source=bin/fm-tasktmp-lib.sh
+  . "$lib"
+  local got
+  got=$(fm_task_tmp_dir some-task-id)
+  [ "$got" = "/tmp/fm-some-task-id" ] \
+    || fail "fm_task_tmp_dir returned '$got', expected /tmp/fm-some-task-id"
+  pass "bin/fm-tasktmp-lib.sh is the single owner of the per-task temp root path"
+}
+
 test_spawn_contract_and_mkdir_pattern
+test_tasktmp_path_has_one_owner
 test_teardown_removes_tasktmp_dir
 test_teardown_skips_gracefully_without_tasktmp
 test_teardown_skips_gracefully_when_dir_missing
