@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# Watcher liveness and worktree-tangle guard, called by supervision scripts, by
-# fm-wake-drain.sh after it empties queued wakes, and by fm-session-start.sh in
-# read-only advisory mode when another session holds the fleet lock.
+# Watcher liveness, worktree-tangle, and claimed-but-never-dispatched guard,
+# called by supervision scripts, by fm-wake-drain.sh after it empties queued
+# wakes, and by fm-session-start.sh in read-only advisory mode when another
+# session holds the fleet lock.
 # First, always warn if the firstmate primary checkout (FM_ROOT) is on a named
 # non-default branch, because that means firstmate-on-itself work landed in the
 # primary instead of an isolated worktree.
+# Second, always warn if data/backlog.md records an item as in flight while it is
+# neither held nor backed by a state/<id>.meta: firstmate started that item and
+# never spawned a worker, which is what a dropped or falsely reported dispatch
+# looks like on disk. Like the tangle alarm it runs before the in-flight early
+# exit below, because it is precisely the case where no worker exists.
 # Then, if any task is in flight (a state/<id>.meta exists) and the watcher's
 # liveness beacon (state/.last-watcher-beat, touched every poll cycle) is
 # missing or older than FM_GUARD_GRACE seconds, prints a loud, clearly delimited
@@ -24,7 +30,12 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+BACKLOG="$DATA/backlog.md"
 GRACE=${FM_GUARD_GRACE:-300}
+# Bound the ids listed in the claimed-but-never-dispatched banner; the count line
+# above them always reports the true total.
+UNDISPATCHED_LIST_MAX=${FM_GUARD_UNDISPATCHED_LIST_MAX:-5}
 queue_pending=false
 READ_ONLY=${FM_GUARD_READ_ONLY:-0}
 case "$READ_ONLY" in 1|true|TRUE|yes|YES) READ_ONLY=1 ;; *) READ_ONLY=0 ;; esac
@@ -137,6 +148,36 @@ if [ -n "$tangle_branch" ]; then
       printf "●  then re-validate '%s' in a proper isolated worktree.\n" "$tangle_branch"
     fi
     printf '●%s\n' "$trule"
+  } >&2
+fi
+
+# Claimed-but-never-dispatched alarm, checked before the in-flight early exit
+# below because the whole point is the case where NO worker exists: a backlog row
+# recorded as started, not held, with no state/<id>.meta. Firstmate has told the
+# captain work was dispatched when nothing was ever spawned, so surface it on the
+# very next fleet action rather than at the next session start. Held rows are
+# excluded, which is what keeps this quiet enough to stay worth reading.
+undispatched=$(fm_supervision_undispatched "$BACKLOG" "$STATE")
+if [ -n "$undispatched" ]; then
+  undispatched_n=$(printf '%s\n' "$undispatched" | wc -l | tr -d ' ')
+  urule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+  {
+    printf '●%s\n' "$urule"
+    printf '●  BACKLOG SAYS STARTED - NO WORKER EXISTS\n'
+    printf '●  %s backlog item(s) are in flight, unheld, and have no crewmate metadata:\n' "$undispatched_n"
+    printf '%s\n' "$undispatched" | head -"$UNDISPATCHED_LIST_MAX" | while IFS= read -r undispatched_id; do
+      printf '●      %s\n' "$undispatched_id"
+    done
+    if [ "$undispatched_n" -gt "$UNDISPATCHED_LIST_MAX" ]; then
+      printf '●      ... and %s more\n' "$((undispatched_n - UNDISPATCHED_LIST_MAX))"
+    fi
+    printf '●  Each was recorded as started but never spawned, or its worker is gone and the row was never filed.\n'
+    if [ "$READ_ONLY" -eq 1 ]; then
+      printf '●  This read-only session should report the gap, not repair it.\n'
+    else
+      printf '●  Do not report these as dispatched. Spawn the work, hold it with a reason, or file it Done.\n'
+    fi
+    printf '●%s\n' "$urule"
   } >&2
 fi
 

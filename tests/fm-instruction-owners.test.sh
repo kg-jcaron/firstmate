@@ -13,6 +13,7 @@ HARNESS="$ROOT/.agents/skills/harness-adapters/SKILL.md"
 CODING="$ROOT/.agents/skills/firstmate-coding-guidelines/SKILL.md"
 RECOVERY="$ROOT/.agents/skills/stuck-crewmate-recovery/SKILL.md"
 SECONDMATE="$ROOT/.agents/skills/secondmate-provisioning/SKILL.md"
+SPEC="$ROOT/.agents/skills/spec-linear/SKILL.md"
 CONFIG="$ROOT/docs/configuration.md"
 AGENTS="$ROOT/AGENTS.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
@@ -221,7 +222,51 @@ test_compressed_agents_retains_authority_and_supervision_safety() {
   pass "compressed AGENTS.md retains authority, supervision, AFK, and X safety"
 }
 
+# spec-linear is the one built-in skill that is BOTH captain-invocable and
+# model-invocable, so its trigger cannot live in section 13 (declared agent-only)
+# and its interactive safeguards have to survive the model-invoked path.
+test_spec_linear_is_model_invocable_with_a_declared_trigger() {
+  assert_no_grep 'disable-model-invocation' "$SPEC" \
+    "spec-linear is still blocked from model invocation"
+  assert_grep 'user-invocable: true' "$SPEC" \
+    "spec-linear must stay captain-invocable"
+  assert_grep 'Use before creating or substantially rewriting a Linear issue or project spec' "$SPEC" \
+    "spec-linear metadata lost the trigger a model matches on"
+  assert_grep 'Load `spec-linear` before creating or substantially rewriting a Linear issue or project spec' "$AGENTS" \
+    "AGENTS.md lost the spec-linear load trigger"
+  assert_no_grep '`spec-linear` - load' "$AGENTS" \
+    "spec-linear must not be listed among the agent-only reference skills"
+  for phrase in \
+    'do not enter it to satisfy some other task' \
+    'stop and say so rather than syncing anything to Linear' \
+    'Only the user'"'"'s own answer clears this checkpoint' \
+    'Never modify an existing spec without that confirmation'; do
+    assert_grep "$phrase" "$SPEC" "spec-linear lost an interactive safeguard: '$phrase'"
+  done
+  pass "spec-linear is model-invocable with a declared trigger and intact safeguards"
+}
+
+# The captain sends asks mid-turn, so the durable half of not dropping them is a
+# capture rule firstmate reads at intake plus the deterministic guard check.
+test_captain_ask_capture_rule_is_stated_at_intake() {
+  local intake
+  intake=$(awk '
+    /^### Intake and authority$/ { found = 1; next }
+    found && /^### / { exit }
+    found { print }
+  ' "$AGENTS")
+  assert_contains "$intake" 'Record every captain ask in the backlog as it arrives, before acting on it' \
+    "AGENTS.md intake lost the record-before-acting rule"
+  assert_contains "$intake" 'A later ask adds work and never supersedes an earlier one unless the captain says so.' \
+    "AGENTS.md intake lost the later-ask-does-not-supersede rule"
+  assert_grep 'Never tell the captain work is dispatched before that confirmation.' "$AGENTS" \
+    "AGENTS.md lost the confirm-before-claiming-dispatch rule"
+  pass "AGENTS.md states the captain-ask capture rule where intake reads it"
+}
+
 test_new_skill_metadata_and_triggers
+test_spec_linear_is_model_invocable_with_a_declared_trigger
+test_captain_ask_capture_rule_is_stated_at_intake
 test_diagnostic_owner_covers_causal_procedure
 test_project_management_owner_covers_guarded_operations
 test_generic_effort_fallback_respects_precedence

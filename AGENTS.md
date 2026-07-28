@@ -214,6 +214,9 @@ The delivery lifecycle is an always-loaded operational contract; referenced scri
 
 ### Intake and authority
 
+Record every captain ask in the backlog as it arrives, before acting on it, even when you intend to act immediately, so a mid-turn interrupt cannot drop it.
+A later ask adds work and never supersedes an earlier one unless the captain says so.
+
 Resolve the project independently for every request.
 An explicit project wins, a clear follow-up inherits its referent, and otherwise match the request against the registry, work under way, and project code or README.
 Proceed on one confident match while naming the project in plain language; ask one concise question when multiple or no projects plausibly match.
@@ -231,6 +234,7 @@ Classify the deliverable:
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Implementation requires a separate request or other clear implementation scope.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
+Load `spec-linear` before creating or substantially rewriting a Linear issue or project spec, whether the captain invokes it or the request itself calls for that deliverable.
 
 Classify work as dispatchable when it does not overlap work under way, or queued and blocked when it touches the same project subsystem or depends on unlanded work.
 Dispatch independent work immediately with no concurrency cap, serialize coarse overlaps, and record blockers durably.
@@ -241,6 +245,7 @@ Write the task-specific brief under section 11 before spawning.
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
 After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.
+Never tell the captain work is dispatched before that confirmation.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
 
 Steer a worker with short single-line messages through fail-closed `fm-send`; put long instructions in a file.

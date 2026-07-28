@@ -1,13 +1,17 @@
 # shellcheck shell=bash
-# Shared "supervision missing" predicate.
+# Shared "supervision missing" predicates.
 # Usage: . bin/fm-supervision-lib.sh
 #
-# True exactly when a firstmate home has in-flight work (a state/<id>.meta
-# exists) but no watcher has a fresh liveness beacon (state/.last-watcher-beat,
-# touched every poll cycle, within the grace window). bin/fm-guard.sh uses this
-# grace-based warning predicate directly; bin/fm-turnend-guard.sh uses the status
-# fields here for its banner but performs its end-of-turn block decision with the
-# live watcher lock check in bin/fm-wake-lib.sh.
+# fm_supervision_status/fm_supervision_unhealthy are true exactly when a
+# firstmate home has in-flight work (a state/<id>.meta exists) but no watcher has
+# a fresh liveness beacon (state/.last-watcher-beat, touched every poll cycle,
+# within the grace window). bin/fm-guard.sh uses this grace-based warning
+# predicate directly; bin/fm-turnend-guard.sh uses the status fields here for its
+# banner but performs its end-of-turn block decision with the live watcher lock
+# check in bin/fm-wake-lib.sh.
+#
+# fm_supervision_undispatched is the separate claimed-but-never-dispatched
+# predicate: a backlog row recorded as started for which no worker exists.
 
 # Portable mtime; Linux stat lacks -f, macOS stat lacks -c.
 fm_sup_stat_mtime() {
@@ -62,4 +66,64 @@ fm_supervision_status() {
 fm_supervision_unhealthy() {
   fm_supervision_status "$@"
   [ "$FM_SUP_IN_FLIGHT" -gt 0 ] && [ "$FM_SUP_WATCHER_FRESH" = false ]
+}
+
+# fm_sup_in_flight_unheld_ids <backlog-file>
+# Print the id of every structured backlog row under the "In flight" heading
+# that carries no "hold:" metadata, one per line. Understands both row forms the
+# tasks-axi markdown backend writes: "- [ ] <id> - ..." and "- **<id>** - ...".
+# "hold-kind:" is deliberately not a match; only a real "hold:" reason excludes a
+# row. Silent for an absent or headingless backlog.
+fm_sup_in_flight_unheld_ids() {
+  local backlog=$1
+  [ -f "$backlog" ] || return 0
+  awk '
+    /^#/ {
+      section = $0
+      sub(/^#+[ \t]*/, "", section)
+      sub(/[ \t]+$/, "", section)
+      next
+    }
+    section != "In flight" { next }
+    {
+      id = ""
+      if (match($0, /^[-*][ \t]+\[[ xX]\][ \t]+/)) {
+        rest = substr($0, RSTART + RLENGTH)
+        if (match(rest, /^[^ \t]+[ \t]+-[ \t]+/)) {
+          id = rest
+          sub(/[ \t].*$/, "", id)
+        }
+      } else if (match($0, /^[-*][ \t]+\*\*[^*]+\*\*[ \t]+-[ \t]+/)) {
+        id = $0
+        sub(/^[-*][ \t]+\*\*/, "", id)
+        sub(/\*\*.*$/, "", id)
+      }
+      if (id == "") next
+      if ($0 ~ /\([ \t]*hold:/ || $0 ~ /,[ \t]*hold:/) next
+      print id
+    }
+  ' "$backlog"
+}
+
+# fm_supervision_undispatched <backlog-file> <state-dir>
+# Print the id of every in-flight, unheld backlog row that has no
+# state/<id>.meta, one per line: work recorded as started for which no worker
+# exists, which is what a dropped or falsely reported dispatch looks like on
+# disk. Held rows are excluded because a deliberately parked item legitimately
+# keeps an in-flight row after its worker is gone, and that exclusion is what
+# keeps this quiet enough to be worth reading. Always returns 0.
+# Related but deliberately separate: fm-fleet-snapshot.sh's secondmate-home
+# summary invalidates a read when an in-flight row has no child metadata. That
+# one answers "can a parent trust this summary" and applies no hold exclusion, so
+# the two must not be collapsed into each other.
+fm_supervision_undispatched() {
+  local backlog=$1 state=$2 id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    [ -e "$state/$id.meta" ] && continue
+    printf '%s\n' "$id"
+  done <<EOF
+$(fm_sup_in_flight_unheld_ids "$backlog")
+EOF
+  return 0
 }
