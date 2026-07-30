@@ -135,6 +135,11 @@ bold-ghost-row" ] || fail "predicate reported the wrong ids, got: $out"
 # here: work firstmate performs itself is parked rather than captain-held, so
 # that routing only stays quiet while a parked hold excludes its row exactly as a
 # captain hold does.
+# A "hold:" key with no reason after it is a hand-edited malformed row, never a
+# hold: tasks-axi always writes a reason, and treating an empty one as held would
+# let a genuinely dropped ask hide behind a typo. fm-fleet-snapshot.sh's
+# hold_active reads that shape as unheld too, so the guard must agree or a row it
+# stays silent about would still blank out a parent's read of the home.
 test_lib_hold_matching_is_exact() {
   local dir out
   dir=$(make_case lib-holds <<'EOF'
@@ -143,15 +148,21 @@ test_lib_hold_matching_is_exact() {
 - [ ] self-run - Firstmate is working this row itself (repo: sample) (kind: ship) (hold: firstmate is working the row itself and is not awaiting a captain decision) (hold-kind: parked)
 - [ ] kind-only - Carries hold-kind but no hold reason (repo: sample) (kind: ship) (hold-kind: captain)
 - [ ] comma-hold - Comma-separated metadata, repo: sample, hold: waiting on the captain
+- [ ] empty-hold - Hold key with no reason (repo: sample) (kind: ship) (hold: )
+- [ ] empty-comma-hold - Comma form with no reason, repo: sample, hold: , kind: ship
 EOF
   )
   out=$(undispatched_ids_of "$dir")
-  [ "$out" = "kind-only" ] || fail "hold matching is wrong, expected only kind-only, got: $out"
+  [ "$out" = "kind-only
+empty-hold
+empty-comma-hold" ] || fail "hold matching is wrong, expected the reasonless rows, got: $out"
 
   out=$(run_guard "$dir")
   assert_not_contains "$out" "self-run" \
     "a parked hold must exclude its row from the banner exactly as a captain hold does"
-  pass "undispatched predicate: only a real hold reason excludes a row, whatever its kind"
+  assert_contains "$out" "empty-hold" \
+    "an empty hold reason must not silence the banner for that row"
+  pass "undispatched predicate: only a non-empty hold reason excludes a row, whatever its kind"
 }
 
 # Free-form body lines sit under a row and can say anything, including the word

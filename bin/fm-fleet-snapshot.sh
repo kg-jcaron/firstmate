@@ -540,15 +540,21 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
     def trunc($n):
       tostring | gsub("\\s+"; " ")
       | if length > $n then .[:$n] + "…" else . end;
-    # Same ACTIVE-hold test bin/fm-supervision-lib.sh applies: a real "hold:"
-    # reason plus either no "hold-until:" date or a date still in the future,
-    # because tasks-axi treats a gate dated today or earlier as dispatchable
-    # again. The gate is read off the preserved raw row rather than captured by
-    # the row parser, so no other projection changes shape.
+    # Same ACTIVE-hold test bin/fm-supervision-lib.sh applies: a non-whitespace
+    # "hold:" reason plus either no "hold-until:" date or a date still in the
+    # future, because tasks-axi treats a gate dated today or earlier as
+    # dispatchable again. The gate is read off the preserved raw row rather than
+    # captured by the row parser, so no other projection changes shape.
+    # The optional capture is materialized into an array first so a row with no
+    # gate yields null rather than an empty stream: this emits exactly one
+    # boolean for every row, so it stays correct in a positive position such as
+    # select(hold_active) instead of only where an empty stream happens to drop
+    # the row too.
     def hold_active:
-      (((.hold_reason // "") | tostring | test("[^[:space:]]"))
-       and (((.raw // "") | capture("hold-until:[[:space:]]*(?<v>[0-9]{4}-[0-9]{2}-[0-9]{2})")? | .v) as $until
-            | $until == null or $until > $today));
+      ([ (.raw // "") | capture("hold-until:[[:space:]]*(?<v>[0-9]{4}-[0-9]{2}-[0-9]{2})")? ]
+       | (.[0].v // null)) as $until
+      | (((.hold_reason // "") | tostring | test("[^[:space:]]"))
+         and ($until == null or $until > $today));
     ([ $backlog.records[]?
        | select((.state == "in_flight" or .state == "queued") and (.structured | not)) ]) as $unstructured_current
     | ([ $backlog.records[]? | select(.state == "in_flight" and .structured) ]) as $owned_in_flight

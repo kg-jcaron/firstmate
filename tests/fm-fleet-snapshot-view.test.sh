@@ -649,8 +649,49 @@ test_unheld_orphan_in_flight_row_still_invalidates_home_summary() {
   pass "a lapsed hold-until gate counts as unheld and still invalidates the summary"
 }
 
+# The exclusion above must not be correct only because select() happens to drop a
+# row on an empty stream too. hold_active is pinned directly here: it must emit
+# exactly ONE boolean for every row shape, so reusing it in a positive position
+# cannot silently invert the parked-row rule AGENTS.md section 10 prescribes.
+hold_active_probe() {  # <hold-reason-json> <raw-row>
+  local def
+  def=$(awk '
+    /^[[:space:]]*def hold_active:/ { inside = 1 }
+    inside { print }
+    inside && /;[[:space:]]*$/ { exit }
+  ' "$SNAPSHOT")
+  [ -n "$def" ] || fail "could not extract the hold_active definition from $SNAPSHOT"
+  jq -nc --arg today "$(date +%Y-%m-%d)" --argjson reason "$1" --arg raw "$2" \
+    "$def"' [ {hold_reason:$reason, raw:$raw} | hold_active ]'
+}
+
+test_hold_active_emits_exactly_one_boolean() {
+  local out past=2000-01-01 future=2099-01-01
+
+  out=$(hold_active_probe '"firstmate is working this row itself"' \
+    '- [ ] self-run - Draft the spec (hold: firstmate is working this row itself) (hold-kind: parked)')
+  [ "$out" = '[true]' ] || fail "a held row with no date gate must yield exactly one true, got: $out"
+
+  out=$(hold_active_probe '"waiting on the vendor"' \
+    "- [ ] gated - Wait (hold: waiting on the vendor) (hold-until: $future)")
+  [ "$out" = '[true]' ] || fail "a future date gate must yield exactly one true, got: $out"
+
+  out=$(hold_active_probe '"waited on the vendor"' \
+    "- [ ] lapsed - Wait (hold: waited on the vendor) (hold-until: $past)")
+  [ "$out" = '[false]' ] || fail "a lapsed date gate must yield exactly one false, got: $out"
+
+  out=$(hold_active_probe 'null' '- [ ] plain - Ship the fix (kind: ship)')
+  [ "$out" = '[false]' ] || fail "an unheld row must yield exactly one false, got: $out"
+
+  out=$(hold_active_probe '""' '- [ ] blank - Ship the fix (hold: )')
+  [ "$out" = '[false]' ] || fail "an empty hold reason must yield exactly one false, got: $out"
+
+  pass "hold_active emits exactly one boolean for every row shape"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_hold_active_emits_exactly_one_boolean
 test_held_orphan_in_flight_row_keeps_home_summary_valid
 test_unheld_orphan_in_flight_row_still_invalidates_home_summary
 test_event_hints_follow_reconciled_current_state

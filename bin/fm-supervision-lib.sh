@@ -96,7 +96,10 @@ fm_supervision_unhealthy() {
 # A hold is ACTIVE only when the row carries a real "hold:" reason AND either no
 # "hold-until:" date or a date still in the future, matching tasks-axi's own
 # semantics: a date gate is inactive on and after that date, so a lapsed gate is
-# dispatchable work again. "hold-kind:" alone is never a hold.
+# dispatchable work again. "hold-kind:" alone is never a hold, and neither is a
+# "hold:" key with no reason after it: tasks-axi always writes a reason, so an
+# empty one is a hand-edited malformed row and must not let a dropped ask hide
+# behind a typo. fm-fleet-snapshot.sh's hold_active applies the same test.
 # Silent for an absent or headingless backlog.
 fm_sup_in_flight_row_records() {
   local backlog=$1
@@ -124,7 +127,7 @@ fm_sup_in_flight_row_records() {
       }
       if (id == "") next
 
-      held = ($0 ~ /\([ \t]*hold:/ || $0 ~ /,[ \t]*hold:/)
+      held = ($0 ~ /\([ \t]*hold:[ \t]*[^ \t,)]/ || $0 ~ /,[ \t]*hold:[ \t]*[^ \t,)]/)
       if (held && match($0, /hold-until:[ \t]*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/)) {
         until_date = substr($0, RSTART, RLENGTH)
         sub(/^hold-until:[ \t]*/, "", until_date)
