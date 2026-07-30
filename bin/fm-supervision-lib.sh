@@ -281,8 +281,10 @@ fm_sup_display_id() {
 # <row-records>; bin/fm-guard.sh does, so one guarded command parses once.
 # Always returns 0.
 # Related but deliberately separate: fm-fleet-snapshot.sh's secondmate-home
-# summary invalidates a read when an in-flight row has no child metadata. That
-# one answers "can a parent trust this summary" and applies no hold exclusion, so
+# summary invalidates a read when an unheld in-flight row has no child metadata.
+# It shares this ACTIVE-hold exclusion, but answers a different question - "can a
+# parent trust this whole summary" rather than "was work claimed and never
+# dispatched" - and its other invalidating conditions have no counterpart here, so
 # the two must not be collapsed into each other.
 fm_supervision_undispatched() {
   local backlog=$1 state=$2 unheld id now=

@@ -149,14 +149,6 @@ fm_guard_digest() {
   fi
 }
 
-fm_guard_line_count() {
-  if [ -z "$1" ]; then
-    printf '0\n'
-    return 0
-  fi
-  printf '%s\n' "$1" | wc -l | tr -d ' '
-}
-
 # Print one bounded, bulleted list inside the banner, then say how many entries it
 # withheld, so a neglected backlog cannot flood every fleet command while the
 # count line above still reports the true total.
@@ -225,10 +217,25 @@ if [ -n "$undispatched" ]; then
   # not a worker spawned, and no metadata check ever ran for them.
   # The predicate types every record in its first tab-separated field, so this
   # banner owns the malformed wording rather than parsing it back out of prose.
-  undispatched_ids=$(printf '%s\n' "$undispatched" | awk -F'\t' '$1 == "ok" { print $2 }')
-  malformed_rows=$(printf '%s\n' "$undispatched" | awk -F'\t' '$1 == "malformed" { print "malformed backlog id: " $2 }')
-  undispatched_n=$(fm_guard_line_count "$undispatched_ids")
-  malformed_n=$(fm_guard_line_count "$malformed_rows")
+  # One in-shell pass splits and counts both classes at once, because this guard
+  # runs on nearly every fleet action.
+  undispatched_ids=
+  malformed_rows=
+  undispatched_n=0
+  malformed_n=0
+  undispatched_nl=$'\n'
+  while IFS=$'\t' read -r undispatched_class undispatched_row; do
+    case "$undispatched_class" in
+      ok)
+        undispatched_n=$((undispatched_n + 1))
+        undispatched_ids="${undispatched_ids:+$undispatched_ids$undispatched_nl}$undispatched_row"
+        ;;
+      malformed)
+        malformed_n=$((malformed_n + 1))
+        malformed_rows="${malformed_rows:+$malformed_rows$undispatched_nl}malformed backlog id: $undispatched_row"
+        ;;
+    esac
+  done <<<"$undispatched"
   undispatched_key=$(fm_guard_digest "$(printf '%s\n' "$undispatched" | LC_ALL=C sort)")
   print_undispatched_banner=0
   if [ "$READ_ONLY" -eq 1 ]; then
@@ -262,15 +269,22 @@ if [ -n "$undispatched" ]; then
       fi
       printf '●%s\n' "$urule"
     } >&2
-  elif [ "$undispatched_n" -eq 0 ]; then
-    printf 'WARNING: %s in-flight backlog row(s) still carry an unusable id (same set) - full banner already printed this episode.\n' \
-      "$malformed_n" >&2
-  elif [ "$malformed_n" -eq 0 ]; then
-    printf 'WARNING: %s backlog item(s) still recorded as started with no worker (same set) - full banner already printed this episode.\n' \
-      "$undispatched_n" >&2
   else
-    printf 'WARNING: %s backlog item(s) still recorded as started with no worker, and %s row(s) with an unusable id (same set) - full banner already printed this episode.\n' \
-      "$undispatched_n" "$malformed_n" >&2
+    # One shared suffix plus a clause per non-empty class, so the reminder cannot
+    # drift apart between the count combinations when this wording changes.
+    undispatched_reminder=
+    if [ "$undispatched_n" -gt 0 ]; then
+      undispatched_reminder="$undispatched_n backlog item(s) still recorded as started with no worker"
+    fi
+    if [ "$malformed_n" -gt 0 ]; then
+      if [ -n "$undispatched_reminder" ]; then
+        undispatched_reminder="$undispatched_reminder, and $malformed_n row(s) with an unusable id"
+      else
+        undispatched_reminder="$malformed_n in-flight backlog row(s) still carry an unusable id"
+      fi
+    fi
+    printf 'WARNING: %s (same set) - full banner already printed this episode.\n' \
+      "$undispatched_reminder" >&2
   fi
 elif [ "$READ_ONLY" -eq 0 ]; then
   # Condition cleared: end the episode so a later recurrence re-arms the banner.

@@ -586,8 +586,73 @@ test_parked_scout_decision_stays_pending() {
   pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
 }
 
+# An in-flight row can legitimately outlive its worker while it carries an ACTIVE
+# hold: AGENTS.md section 10 records work firstmate runs itself as exactly that
+# shape. Such a row must not blank out a parent's whole read of the home. The
+# negative control below is what keeps the exclusion narrow: an unheld orphan row
+# must still invalidate the summary, and a lapsed date gate counts as unheld.
+write_home_summary_backlog() {  # <home> <in-flight-row>
+  cat > "$1/data/backlog.md" <<EOF
+## In flight
+$2
+
+## Queued
+
+## Done
+EOF
+}
+
+home_summary_json() {  # <home>
+  local fakebin
+  fakebin=$(make_fakebin "$1")
+  PATH="$fakebin:$PATH" FM_HOME="$1" "$SNAPSHOT" --secondmate-home-summary
+}
+
+test_held_orphan_in_flight_row_keeps_home_summary_valid() {
+  local home out
+  home=$(make_home held-orphan)
+  write_home_summary_backlog "$home" \
+    '- [ ] self-run-spec - Draft the Linear spec (repo: firstmate) (kind: ship) (hold: firstmate is working this row itself) (hold-kind: parked)'
+  out=$(home_summary_json "$home")
+  printf '%s' "$out" | jq -e '.valid == true and .reason == null and .state != "unknown"' >/dev/null \
+    || fail "an actively held worker-less in-flight row must not invalidate the home summary: $out"
+  pass "an actively held in-flight row with no worker keeps the home summary valid"
+
+  home=$(make_home held-orphan-until)
+  write_home_summary_backlog "$home" \
+    '- [ ] gated-spec - Wait on the vendor (repo: firstmate) (kind: ship) (hold: waiting on the vendor) (hold-until: 2099-01-01)'
+  out=$(home_summary_json "$home")
+  printf '%s' "$out" | jq -e '.valid == true and .reason == null' >/dev/null \
+    || fail "a future hold-until gate must keep the home summary valid: $out"
+  pass "a future hold-until gate keeps the home summary valid"
+}
+
+test_unheld_orphan_in_flight_row_still_invalidates_home_summary() {
+  local home out
+  home=$(make_home unheld-orphan)
+  write_home_summary_backlog "$home" \
+    '- [ ] dropped-ship - Ship the fix (repo: firstmate) (kind: ship) (since 2026-07-28)'
+  out=$(home_summary_json "$home")
+  printf '%s' "$out" | jq -e '
+    .valid == false and .state == "unknown"
+      and .reason == "in-flight backlog item has no child metadata"
+  ' >/dev/null || fail "an unheld worker-less in-flight row must still invalidate the summary: $out"
+  pass "an unheld in-flight row with no worker still invalidates the home summary"
+
+  home=$(make_home lapsed-orphan)
+  write_home_summary_backlog "$home" \
+    '- [ ] lapsed-gate - Wait on the vendor (repo: firstmate) (kind: ship) (hold: waited on the vendor) (hold-until: 2000-01-01)'
+  out=$(home_summary_json "$home")
+  printf '%s' "$out" | jq -e '
+    .valid == false and .reason == "in-flight backlog item has no child metadata"
+  ' >/dev/null || fail "a lapsed hold-until gate must count as unheld: $out"
+  pass "a lapsed hold-until gate counts as unheld and still invalidates the summary"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_held_orphan_in_flight_row_keeps_home_summary_valid
+test_unheld_orphan_in_flight_row_still_invalidates_home_summary
 test_event_hints_follow_reconciled_current_state
 test_open_decision_survives_later_unrelated_event
 test_secondmate_open_decision_survives_live_endpoint

@@ -169,7 +169,7 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the latest from origin with fast-forward-only pulls, then re-read instructions and nudge secondmates |
 | `/stow`            | Sweep the session for uncaptured durable knowledge, route each finding to its disk home per AGENTS.md, file undone next steps to the backlog, and report what is now safe to reset |
 
-`/spec-linear` was the only built-in that blocked model invocation, and that block is now gone so firstmate can also load it itself at the trigger named in [`AGENTS.md`](AGENTS.md), because a request can call for a Linear spec without naming the skill.
+Firstmate also loads `/spec-linear` itself at the trigger named in [`AGENTS.md`](AGENTS.md), because a request can call for a Linear spec without naming the skill.
 Its question-and-answer flow and its draft-approval checkpoint are identical on either path.
 
 Agent-only reference skills live under `.agents/skills/` and are loaded by firstmate at the trigger points named in [`AGENTS.md`](AGENTS.md).
