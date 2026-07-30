@@ -13,6 +13,22 @@
 # fm_supervision_undispatched is the separate claimed-but-never-dispatched
 # predicate: a backlog row recorded as started for which no worker exists.
 
+# fm_task_id_path_safe (bin/fm-pr-lib.sh) is the repo's one owner of task-id
+# path safety; sourced here only when a caller has not already provided it, so
+# re-sourcing never resets that library's FM_PR_* globals mid-run.
+if ! declare -F fm_task_id_path_safe >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-pr-lib.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-pr-lib.sh"
+fi
+
+# Age at which a completion-pending marker stops excluding its row, so a task
+# torn down but never filed eventually surfaces again instead of being blinded
+# forever. Overridable per home; a non-numeric override falls back to the default.
+FM_SUP_COMPLETION_PENDING_MAX_AGE=${FM_COMPLETION_PENDING_MAX_AGE:-86400}
+case "$FM_SUP_COMPLETION_PENDING_MAX_AGE" in
+  ''|*[!0-9]*) FM_SUP_COMPLETION_PENDING_MAX_AGE=86400 ;;
+esac
+
 # Portable mtime; Linux stat lacks -f, macOS stat lacks -c.
 fm_sup_stat_mtime() {
   if [ "$(uname)" = Darwin ]; then
@@ -68,16 +84,19 @@ fm_supervision_unhealthy() {
   [ "$FM_SUP_IN_FLIGHT" -gt 0 ] && [ "$FM_SUP_WATCHER_FRESH" = false ]
 }
 
-# fm_sup_in_flight_unheld_ids <backlog-file>
-# Print the id of every structured backlog row under the "In flight" heading
-# that carries no "hold:" metadata, one per line. Understands both row forms the
-# tasks-axi markdown backend writes: "- [ ] <id> - ..." and "- **<id>** - ...".
-# "hold-kind:" is deliberately not a match; only a real "hold:" reason excludes a
-# row. Silent for an absent or headingless backlog.
-fm_sup_in_flight_unheld_ids() {
+# fm_sup_in_flight_row_records <backlog-file>
+# The one parser for structured backlog rows under the "In flight" heading.
+# Prints "<held|open><TAB><id>" per row. Understands both row forms the tasks-axi
+# markdown backend writes: "- [ ] <id> - ..." and "- **<id>** - ...".
+# A hold is ACTIVE only when the row carries a real "hold:" reason AND either no
+# "hold-until:" date or a date still in the future, matching tasks-axi's own
+# semantics: a date gate is inactive on and after that date, so a lapsed gate is
+# dispatchable work again. "hold-kind:" alone is never a hold.
+# Silent for an absent or headingless backlog.
+fm_sup_in_flight_row_records() {
   local backlog=$1
   [ -f "$backlog" ] || return 0
-  awk '
+  awk -v today="$(date +%Y-%m-%d)" '
     /^#/ {
       section = $0
       sub(/^#+[ \t]*/, "", section)
@@ -99,19 +118,112 @@ fm_sup_in_flight_unheld_ids() {
         sub(/\*\*.*$/, "", id)
       }
       if (id == "") next
-      if ($0 ~ /\([ \t]*hold:/ || $0 ~ /,[ \t]*hold:/) next
-      print id
+
+      held = ($0 ~ /\([ \t]*hold:/ || $0 ~ /,[ \t]*hold:/)
+      if (held && match($0, /hold-until:[ \t]*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/)) {
+        until_date = substr($0, RSTART, RLENGTH)
+        sub(/^hold-until:[ \t]*/, "", until_date)
+        # Lexical compare is correct for zero-padded ISO dates.
+        if (until_date <= today) held = 0
+      }
+      printf "%s\t%s\n", (held ? "held" : "open"), id
     }
   ' "$backlog"
 }
 
+# fm_sup_in_flight_unheld_ids <backlog-file>
+# Ids of in-flight rows carrying no ACTIVE hold, one per line.
+fm_sup_in_flight_unheld_ids() {
+  fm_sup_in_flight_row_records "$1" | awk -F'\t' '$1 == "open" { print $2 }'
+}
+
+# fm_sup_completion_pending_marker <state-dir> <id>
+# Path of the durable "torn down, awaiting its backlog filing" marker for a task.
+fm_sup_completion_pending_marker() {
+  printf '%s/.completion-pending-%s\n' "$1" "$2"
+}
+
+# fm_supervision_mark_completion_pending <state-dir> <id>
+# Record that <id>'s worker metadata was just removed by a real teardown and its
+# backlog row has not been filed yet. bin/fm-teardown.sh is the writer. Refuses
+# an unsafe id rather than creating a path outside the state dir.
+fm_supervision_mark_completion_pending() {
+  local state=$1 id=$2
+  fm_task_id_path_safe "$id" || return 1
+  [ -d "$state" ] || return 0
+  : > "$(fm_sup_completion_pending_marker "$state" "$id")" 2>/dev/null || return 1
+  return 0
+}
+
+# fm_sup_completion_pending_fresh <state-dir> <id>
+# True while <id> carries an unexpired completion-pending marker.
+fm_sup_completion_pending_fresh() {
+  local state=$1 id=$2 marker m
+  marker=$(fm_sup_completion_pending_marker "$state" "$id")
+  [ -e "$marker" ] || return 1
+  m=$(fm_sup_stat_mtime "$marker")
+  [ -n "$m" ] || return 1
+  [ "$(( $(date +%s) - m ))" -lt "$FM_SUP_COMPLETION_PENDING_MAX_AGE" ]
+}
+
+# fm_supervision_sweep_completion_pending <backlog-file> <state-dir>
+# Keep the marker set self-clearing and bounded: drop every marker whose row is
+# no longer in flight (it has been filed) and every marker past the max age (so a
+# torn-down-but-never-filed row surfaces again). Writers only; callers in
+# read-only mode must not run this. Always returns 0.
+fm_supervision_sweep_completion_pending() {
+  local backlog=$1 state=$2 marker id now m in_flight
+  [ -d "$state" ] || return 0
+  now=$(date +%s)
+  in_flight=$(fm_sup_in_flight_row_records "$backlog" | awk -F'\t' '{ print $2 }')
+  for marker in "$state"/.completion-pending-*; do
+    [ -e "$marker" ] || continue
+    id=${marker##*/.completion-pending-}
+    # Only teardown writes these, and it validates the id first. Anything else is
+    # hand-placed and could only serve to blind the alarm, so drop it rather than
+    # letting an untrusted name drive the match below.
+    if ! fm_task_id_path_safe "$id"; then
+      rm -f "$marker" 2>/dev/null || true
+      continue
+    fi
+    m=$(fm_sup_stat_mtime "$marker")
+    if [ -z "$m" ] || [ "$((now - m))" -ge "$FM_SUP_COMPLETION_PENDING_MAX_AGE" ]; then
+      rm -f "$marker" 2>/dev/null || true
+      continue
+    fi
+    case $'\n'"$in_flight"$'\n' in
+      *$'\n'"$id"$'\n'*) : ;;
+      *) rm -f "$marker" 2>/dev/null || true ;;
+    esac
+  done
+  return 0
+}
+
+# fm_sup_display_id <id>
+# A bounded, printable rendering of an untrusted backlog id, so a hand-edited row
+# can never inject control characters or unbounded text into a banner.
+fm_sup_display_id() {
+  local rendered
+  rendered=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._-' '?' | cut -c1-60)
+  printf '%s\n' "$rendered"
+}
+
 # fm_supervision_undispatched <backlog-file> <state-dir>
-# Print the id of every in-flight, unheld backlog row that has no
-# state/<id>.meta, one per line: work recorded as started for which no worker
-# exists, which is what a dropped or falsely reported dispatch looks like on
-# disk. Held rows are excluded because a deliberately parked item legitimately
-# keeps an in-flight row after its worker is gone, and that exclusion is what
-# keeps this quiet enough to be worth reading. Always returns 0.
+# Print the id of every in-flight backlog row that has no ACTIVE hold, no
+# state/<id>.meta, and no fresh completion-pending marker, one per line: work
+# recorded as started for which no worker exists, which is what a dropped or
+# falsely reported dispatch looks like on disk.
+# Two exclusions keep this quiet enough to be worth reading, and both are
+# deterministic rather than content heuristics:
+#   - An actively held row: a deliberately parked item legitimately keeps an
+#     in-flight row after its worker is gone.
+#   - A row whose task was just torn down (bin/fm-teardown.sh writes the marker
+#     as it removes state/<id>.meta) and has not been filed yet. That window is
+#     the ordinary ship-cleanup path, so without this the alarm would fire on
+#     every normal completion and train the reader to skim past it.
+# A row whose id is not path safe is never used to probe the filesystem; it is
+# reported as malformed instead, so a hand-edited row cannot quietly hide work.
+# Always returns 0.
 # Related but deliberately separate: fm-fleet-snapshot.sh's secondmate-home
 # summary invalidates a read when an in-flight row has no child metadata. That
 # one answers "can a parent trust this summary" and applies no hold exclusion, so
@@ -120,7 +232,12 @@ fm_supervision_undispatched() {
   local backlog=$1 state=$2 id
   while IFS= read -r id; do
     [ -n "$id" ] || continue
+    if ! fm_task_id_path_safe "$id"; then
+      printf 'malformed backlog id: %s\n' "$(fm_sup_display_id "$id")"
+      continue
+    fi
     [ -e "$state/$id.meta" ] && continue
+    fm_sup_completion_pending_fresh "$state" "$id" && continue
     printf '%s\n' "$id"
   done <<EOF
 $(fm_sup_in_flight_unheld_ids "$backlog")

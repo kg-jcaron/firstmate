@@ -105,6 +105,7 @@ state/               volatile runtime signals; gitignored
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
+  .completion-pending-<id>  written by teardown as it removes a task's worker record, meaning "torn down, awaiting its backlog filing"; keeps the claimed-but-never-dispatched guard quiet for that id until the row is filed or the marker expires
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
 .no-mistakes/        local validation state and evidence; gitignored
 ```
@@ -234,7 +235,7 @@ Classify the deliverable:
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Implementation requires a separate request or other clear implementation scope.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
-Load `spec-linear` before creating or substantially rewriting a Linear issue or project spec, whether the captain invokes it or the request itself calls for that deliverable.
+Load `spec-linear` before creating or substantially rewriting a Linear issue or project spec, whether the captain invokes it or the request itself calls for that deliverable; firstmate runs this one itself because the flow needs the captain's live participation to answer its questions and approve the draft.
 
 Classify work as dispatchable when it does not overlap work under way, or queued and blocked when it touches the same project subsystem or depends on unlanded work.
 Dispatch independent work immediately with no concurrency cap, serialize coarse overlaps, and record blockers durably.

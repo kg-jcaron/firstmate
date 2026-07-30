@@ -58,9 +58,13 @@ The existing turn-end guard is unchanged and remains the final backstop for all 
 Its `--restart` mode signals only the watcher recorded in the current home's `state/.watch.lock`, so restarting one home cannot kill sibling secondmate watchers.
 A pull-based guard (`bin/fm-guard.sh`) warns through supervision tool output if the primary checkout is tangled, if a backlog item is recorded as in flight while it is neither held nor backed by any worker metadata, or if tasks are in flight and that watcher stops running or queued wakes are waiting to be drained.
 The in-flight-with-no-worker alarm is the deterministic half of not silently dropping a captain ask: the captain sends asks mid-turn, so firstmate can start an item, pivot to the interrupt, and report work as dispatched that was never spawned.
-Excluding held rows is what keeps it quiet, because a deliberately parked item legitimately keeps an in-flight row after its worker is gone.
+Two deterministic exclusions keep it quiet enough to stay worth reading, rather than content heuristics that would each add a way to blind the true positive.
+An actively held row is excluded because a deliberately parked item legitimately keeps an in-flight row after its worker is gone, and a hold whose `hold-until` date has arrived is not active, matching how the backlog backend treats a lapsed date gate as dispatchable work again.
+A row whose task was just torn down is excluded through a durable marker that teardown writes as it removes the worker metadata, because filing the row is the step after cleanup, so without it the alarm would fire on every ordinary ship completion.
+That marker expires and sweeps itself once the row is filed, so it can never permanently blind the alarm for a row that really was dropped.
 The drain script calls that guard after emptying the queue, which avoids repeating the queued-wakes warning for records it just consumed while still warning on stale watcher liveness.
-It leads with a prominent bordered tangle banner, while `bin/fm-guard.sh` owns the stale-watcher banner/reminder policy so repeated guarded commands stay noisy without reprinting the full watcher-down banner in the same episode.
+It leads with a prominent bordered tangle banner, while `bin/fm-guard.sh` owns the banner/reminder policy for both the stale-watcher and in-flight-with-no-worker alarms, so repeated guarded commands stay noisy without reprinting either full banner in the same episode.
+Each alarm keys its own episode independently, so one alarm's deduplication never suppresses another's banner or the queued-wakes warning.
 On every verified primary harness, tracked hook integration gives the primary session a push-based backstop: when work is in flight and no identity-matched watcher lock with a fresh beacon is live, direct Stop hooks block and passive turn-end hooks force one bounded follow-up.
 The guard covers the main primary and genuinely marked secondmate homes, exempts child crewmate/scout worktrees, is loop-safe per harness, and is documented in [turnend-guard.md](turnend-guard.md).
 

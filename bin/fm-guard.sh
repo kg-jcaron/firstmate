@@ -10,7 +10,9 @@
 # neither held nor backed by a state/<id>.meta: firstmate started that item and
 # never spawned a worker, which is what a dropped or falsely reported dispatch
 # looks like on disk. Like the tangle alarm it runs before the in-flight early
-# exit below, because it is precisely the case where no worker exists.
+# exit below, because it is precisely the case where no worker exists. Its full
+# banner is likewise emitted once per distinct episode (keyed to the reported id
+# set) under state/.guard-undispatched-banner.
 # Then, if any task is in flight (a state/<id>.meta exists) and the watcher's
 # liveness beacon (state/.last-watcher-beat, touched every poll cycle) is
 # missing or older than FM_GUARD_GRACE seconds, prints a loud, clearly delimited
@@ -34,16 +36,21 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 BACKLOG="$DATA/backlog.md"
 GRACE=${FM_GUARD_GRACE:-300}
 # Bound the ids listed in the claimed-but-never-dispatched banner; the count line
-# above them always reports the true total.
+# above them always reports the true total. Validated before use so a non-numeric
+# override cannot leak a head or test error into the middle of the banner, and
+# clamped to at least 1 so the banner can never name no ids at all.
 UNDISPATCHED_LIST_MAX=${FM_GUARD_UNDISPATCHED_LIST_MAX:-5}
+case "$UNDISPATCHED_LIST_MAX" in ''|*[!0-9]*) UNDISPATCHED_LIST_MAX=5 ;; esac
+[ "$UNDISPATCHED_LIST_MAX" -ge 1 ] || UNDISPATCHED_LIST_MAX=1
 queue_pending=false
 READ_ONLY=${FM_GUARD_READ_ONLY:-0}
 case "$READ_ONLY" in 1|true|TRUE|yes|YES) READ_ONLY=1 ;; *) READ_ONLY=0 ;; esac
 CONTINUE_LINE=${FM_GUARD_CONTINUE_LINE:-This is a supervision warning only; the guarded operation WILL still run.}
 
-# Volatile, home-scoped episode marker: one line = the current stale-episode key.
-# Cleared when the home leaves the unhealthy state so a later episode re-arms.
+# Volatile, home-scoped episode markers: one line = that alarm's current episode
+# key. Each is cleared when its own condition clears so a later episode re-arms.
 STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
+UNDISPATCHED_BANNER_MARKER="$STATE/.guard-undispatched-banner"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -66,14 +73,15 @@ fm_guard_stale_episode_key() {
   fi
 }
 
-# Claim the full banner for this episode. Exit 0 = print full banner (this call
-# owns the first announcement). Exit 1 = same episode already announced (print
-# reminder). The shared wake lock helper owns the race-safety mechanics; the
-# re-check under the lock makes concurrent claims idempotent.
-fm_guard_claim_stale_banner() {
-  local state=$1 key=$2
-  local marker="$state/.guard-watcher-stale-banner"
-  local lock="$state/.guard-watcher-stale-banner.lock"
+# Claim the full banner for this episode of the alarm owning <marker>. Exit 0 =
+# print full banner (this call owns the first announcement). Exit 1 = same
+# episode already announced (print reminder). The shared wake lock helper owns
+# the race-safety mechanics; the re-check under the lock makes concurrent claims
+# idempotent. Each alarm passes its own marker, so one alarm's dedup never
+# suppresses another's.
+fm_guard_claim_banner() {
+  local marker=$1 key=$2
+  local lock="$marker.lock"
   local seen i
 
   seen=$(cat "$marker" 2>/dev/null || true)
@@ -110,9 +118,8 @@ fm_guard_claim_stale_banner() {
   return 0
 }
 
-fm_guard_stale_banner_seen() {
-  local state=$1 key=$2
-  local marker="$state/.guard-watcher-stale-banner"
+fm_guard_banner_seen() {
+  local marker=$1 key=$2
   local seen
 
   seen=$(cat "$marker" 2>/dev/null || true)
@@ -122,6 +129,18 @@ fm_guard_stale_banner_seen() {
 
 fm_guard_clear_stale_banner() {
   rm -f "$STALE_BANNER_MARKER" 2>/dev/null || true
+}
+
+# Bounded episode key for an arbitrary-length set of ids: the marker stays one
+# short line no matter how neglected the backlog is.
+fm_guard_digest() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | awk '{print "sha256:" $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | awk '{print "sha256:" $1}'
+  else
+    printf '%s' "$1" | cksum | awk '{print "cksum:" $1 ":" $2}'
+  fi
 }
 
 # Worktree-tangle alarm, checked FIRST and independent of in-flight tasks: the
@@ -153,32 +172,54 @@ fi
 
 # Claimed-but-never-dispatched alarm, checked before the in-flight early exit
 # below because the whole point is the case where NO worker exists: a backlog row
-# recorded as started, not held, with no state/<id>.meta. Firstmate has told the
-# captain work was dispatched when nothing was ever spawned, so surface it on the
-# very next fleet action rather than at the next session start. Held rows are
-# excluded, which is what keeps this quiet enough to stay worth reading.
+# recorded as started, with no ACTIVE hold and no state/<id>.meta. Firstmate has
+# told the captain work was dispatched when nothing was ever spawned, so surface
+# it on the very next fleet action rather than at the next session start.
+# The predicate's two exclusions - an active hold, and a task torn down but not
+# yet filed - are what keep this quiet enough to stay worth reading; see
+# bin/fm-supervision-lib.sh. The sweep below keeps the teardown markers
+# self-clearing and bounded, and only a writable session may run it.
+# Like the watcher-down banner, the full banner prints once per episode, keyed to
+# the set of reported ids, so a persistent gap does not repaint on every fleet
+# command. This dedup is independent of the other alarms in both directions.
+[ "$READ_ONLY" -eq 1 ] || fm_supervision_sweep_completion_pending "$BACKLOG" "$STATE"
 undispatched=$(fm_supervision_undispatched "$BACKLOG" "$STATE")
 if [ -n "$undispatched" ]; then
   undispatched_n=$(printf '%s\n' "$undispatched" | wc -l | tr -d ' ')
-  urule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-  {
-    printf '●%s\n' "$urule"
-    printf '●  BACKLOG SAYS STARTED - NO WORKER EXISTS\n'
-    printf '●  %s backlog item(s) are in flight, unheld, and have no crewmate metadata:\n' "$undispatched_n"
-    printf '%s\n' "$undispatched" | head -"$UNDISPATCHED_LIST_MAX" | while IFS= read -r undispatched_id; do
-      printf '●      %s\n' "$undispatched_id"
-    done
-    if [ "$undispatched_n" -gt "$UNDISPATCHED_LIST_MAX" ]; then
-      printf '●      ... and %s more\n' "$((undispatched_n - UNDISPATCHED_LIST_MAX))"
-    fi
-    printf '●  Each was recorded as started but never spawned, or its worker is gone and the row was never filed.\n'
-    if [ "$READ_ONLY" -eq 1 ]; then
-      printf '●  This read-only session should report the gap, not repair it.\n'
-    else
-      printf '●  Do not report these as dispatched. Spawn the work, hold it with a reason, or file it Done.\n'
-    fi
-    printf '●%s\n' "$urule"
-  } >&2
+  undispatched_key=$(fm_guard_digest "$(printf '%s\n' "$undispatched" | LC_ALL=C sort)")
+  print_undispatched_banner=0
+  if [ "$READ_ONLY" -eq 1 ]; then
+    fm_guard_banner_seen "$UNDISPATCHED_BANNER_MARKER" "$undispatched_key" || print_undispatched_banner=1
+  elif fm_guard_claim_banner "$UNDISPATCHED_BANNER_MARKER" "$undispatched_key"; then
+    print_undispatched_banner=1
+  fi
+  if [ "$print_undispatched_banner" -eq 1 ]; then
+    urule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+    {
+      printf '●%s\n' "$urule"
+      printf '●  BACKLOG SAYS STARTED - NO WORKER EXISTS\n'
+      printf '●  %s backlog item(s) are in flight, unheld, and have no crewmate metadata:\n' "$undispatched_n"
+      printf '%s\n' "$undispatched" | head -"$UNDISPATCHED_LIST_MAX" | while IFS= read -r undispatched_id; do
+        printf '●      %s\n' "$undispatched_id"
+      done
+      if [ "$undispatched_n" -gt "$UNDISPATCHED_LIST_MAX" ]; then
+        printf '●      ... and %s more\n' "$((undispatched_n - UNDISPATCHED_LIST_MAX))"
+      fi
+      printf '●  Each was recorded as started but never spawned, or its worker is gone and the row was never filed.\n'
+      if [ "$READ_ONLY" -eq 1 ]; then
+        printf '●  This read-only session should report the gap, not repair it.\n'
+      else
+        printf '●  Do not report these as dispatched. Spawn the work, hold it with a reason, or file it Done.\n'
+      fi
+      printf '●%s\n' "$urule"
+    } >&2
+  else
+    printf 'WARNING: %s backlog item(s) still recorded as started with no worker (same set) - full banner already printed this episode.\n' \
+      "$undispatched_n" >&2
+  fi
+elif [ "$READ_ONLY" -eq 0 ]; then
+  # Condition cleared: end the episode so a later recurrence re-arms the banner.
+  rm -f "$UNDISPATCHED_BANNER_MARKER" 2>/dev/null || true
 fi
 
 # Compute in-flight count and watcher-beacon freshness via the shared
@@ -207,8 +248,8 @@ if [ "$watcher_fresh" = false ]; then
   episode_key=${episode_key%$'\n'}
   print_full_banner=0
   if [ "$READ_ONLY" -eq 1 ]; then
-    fm_guard_stale_banner_seen "$STATE" "$episode_key" || print_full_banner=1
-  elif fm_guard_claim_stale_banner "$STATE" "$episode_key"; then
+    fm_guard_banner_seen "$STALE_BANNER_MARKER" "$episode_key" || print_full_banner=1
+  elif fm_guard_claim_banner "$STALE_BANNER_MARKER" "$episode_key"; then
     print_full_banner=1
   fi
   if [ "$print_full_banner" -eq 1 ]; then

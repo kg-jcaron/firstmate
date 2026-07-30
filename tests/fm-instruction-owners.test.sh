@@ -234,6 +234,8 @@ test_spec_linear_is_model_invocable_with_a_declared_trigger() {
     "spec-linear metadata lost the trigger a model matches on"
   assert_grep 'Load `spec-linear` before creating or substantially rewriting a Linear issue or project spec' "$AGENTS" \
     "AGENTS.md lost the spec-linear load trigger"
+  assert_grep 'firstmate runs this one itself because the flow needs the captain'"'"'s live participation' "$AGENTS" \
+    "AGENTS.md must say why this planning deliverable is not delegated to a crewmate"
   assert_no_grep '`spec-linear` - load' "$AGENTS" \
     "spec-linear must not be listed among the agent-only reference skills"
   for phrase in \
