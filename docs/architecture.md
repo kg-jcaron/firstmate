@@ -65,6 +65,7 @@ That marker expires and sweeps itself once the row is filed, so it can never per
 The drain script calls that guard after emptying the queue, which avoids repeating the queued-wakes warning for records it just consumed while still warning on stale watcher liveness.
 It leads with a prominent bordered tangle banner, while `bin/fm-guard.sh` owns the banner/reminder policy for both the stale-watcher and in-flight-with-no-worker alarms, so repeated guarded commands stay noisy without reprinting either full banner in the same episode.
 Each alarm keys its own episode independently, so one alarm's deduplication never suppresses another's banner or the queued-wakes warning.
+A stale beacon self-clears when supervision recovers, but an unacted in-flight-with-no-worker gap does not, so the locked session-start path ends that alarm's episode once per session and a read-only session leaves the marker untouched.
 On every verified primary harness, tracked hook integration gives the primary session a push-based backstop: when work is in flight and no identity-matched watcher lock with a fresh beacon is live, direct Stop hooks block and passive turn-end hooks force one bounded follow-up.
 The guard covers the main primary and genuinely marked secondmate homes, exempts child crewmate/scout worktrees, is loop-safe per harness, and is documented in [turnend-guard.md](turnend-guard.md).
 

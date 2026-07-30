@@ -470,6 +470,35 @@ EOF
   pass "fm-guard undispatched: full banner prints once per distinct id set"
 }
 
+# The gap persists exactly while nobody has acted on it, so per-episode dedup
+# alone would earn a dropped ask one loud banner in its whole lifetime and a
+# concise one-liner forever after. A locked session start ends the episode, so the
+# alarm is quiet within a session and loud on every new one.
+test_session_start_rearms_banner_each_session() {
+  local dir home out
+  dir=$(make_case guard-session-rearm <<'EOF'
+## In flight
+- [ ] ghost - Never spawned (repo: sample) (kind: ship)
+EOF
+  )
+  home=$(case_home "$dir")
+
+  out=$(run_guard "$dir")
+  [ "$(count_text "$out" "$BANNER")" -eq 1 ] || fail "first call of the session did not print the full banner: $out"
+  out=$(run_guard "$dir")
+  [ "$(count_text "$out" "$BANNER")" -eq 0 ] || fail "later call in the same session repeated the full banner: $out"
+
+  # What a locked session start does, through the same owner it calls.
+  fm_supervision_reset_undispatched_episode "$home/state"
+  assert_absent "$(fm_sup_undispatched_banner_marker "$home/state")" \
+    "the session-start reset must end the previous session's episode"
+  out=$(run_guard "$dir")
+  [ "$(count_text "$out" "$BANNER")" -eq 1 ] || fail "a fresh session must print the full banner again: $out"
+  out=$(run_guard "$dir")
+  [ "$(count_text "$out" "$BANNER")" -eq 0 ] || fail "the new session must stay quiet after its own full banner: $out"
+  pass "fm-guard undispatched: each new session earns exactly one full banner"
+}
+
 # Once the agent acts, the episode ends, so a later recurrence is loud again.
 test_guard_banner_rearms_after_condition_clears() {
   local dir home out
@@ -580,6 +609,39 @@ test_guard_list_max_override_is_validated() {
   pass "fm-guard undispatched: a bad list-max override is clamped, never leaked"
 }
 
+# The documented knob is FM_COMPLETION_PENDING_MAX_AGE in the environment of a
+# real guard process; the internal FM_SUP_ name the predicate reads is an
+# implementation detail. Pin the operator's own path so a refactor of the
+# source-time assignment cannot break it with the suite still green.
+test_guard_completion_age_env_knob_is_honored() {
+  local dir out
+  dir=$(make_case guard-completion-age-env <<'EOF'
+## In flight
+- [ ] torn-down - Worker cleaned up, row not filed yet (repo: sample) (kind: ship)
+EOF
+  )
+  : > "$(completion_marker "$dir" torn-down)"
+
+  out=$(run_guard "$dir")
+  assert_not_contains "$out" "$BANNER" \
+    "a fresh cleanup marker must keep its row quiet at the default age"
+
+  # Zero age through the public environment variable: the same fresh marker stops
+  # excluding its row, so the guard fires.
+  out=$(run_guard_with "$dir" FM_COMPLETION_PENDING_MAX_AGE=0)
+  assert_contains "$out" "$BANNER" \
+    "FM_COMPLETION_PENDING_MAX_AGE=0 did not reach the predicate through the environment"
+  assert_contains "$out" "torn-down" "the expired-marker banner must name the row"
+
+  # A non-numeric override falls back to the default rather than expiring markers.
+  # That zero-age pass swept the marker away, so restore the cleanup window first.
+  : > "$(completion_marker "$dir" torn-down)"
+  out=$(run_guard_with "$dir" FM_COMPLETION_PENDING_MAX_AGE=abc)
+  assert_not_contains "$out" "$BANNER" \
+    "a non-numeric FM_COMPLETION_PENDING_MAX_AGE must fall back to the default age"
+  pass "fm-guard undispatched: the documented completion-age knob works through the environment"
+}
+
 test_lib_reports_only_unheld_in_flight_without_meta
 test_lib_hold_matching_is_exact
 test_lib_lapsed_hold_until_is_not_a_hold
@@ -594,7 +656,9 @@ test_real_teardown_path_is_quiet
 test_guard_read_only_reports_without_repair_instruction
 test_guard_banner_is_bounded
 test_guard_banner_dedups_per_episode
+test_session_start_rearms_banner_each_session
 test_guard_banner_rearms_after_condition_clears
 test_guard_read_only_never_mutates_state
 test_guard_alarms_stay_independent
 test_guard_list_max_override_is_validated
+test_guard_completion_age_env_knob_is_honored

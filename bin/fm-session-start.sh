@@ -26,7 +26,10 @@
 # was bootstrap-then-lock):
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
-#                       mutating step runs.
+#                       mutating step runs. On the locked path only, this also
+#                       ends the previous session's in-flight-with-no-worker
+#                       banner episode so a persisting gap is loud once per
+#                       session (bin/fm-guard.sh owns that banner).
 #   2. bootstrap      - detect-only diagnostics always run. The five
 #                       MUTATING sweeps (legacy PR-check migration, secondmate
 #                       fast-forward, secondmate liveness, X-mode artifact writes, fleet sync) run only
@@ -100,6 +103,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 
 STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
@@ -260,6 +265,15 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '●  otherwise mutate fleet state from this session.\n'
     printf '%s\n' "$BAR"
   }
+else
+  # A locked session earns one full in-flight-with-no-worker banner: end the
+  # previous session's episode here, so the first fm-guard.sh call below (the
+  # bootstrap fleet sync, then the wake drain) prints it in full and later
+  # guarded commands in this session print the concise reminder instead. That
+  # alarm never self-clears while the gap persists, so without this a dropped ask
+  # would earn one loud banner in its entire lifetime. A read-only session must
+  # leave the marker alone, exactly as it leaves the stale-watcher marker alone.
+  fm_supervision_reset_undispatched_episode "$STATE"
 fi
 
 # --- 2. bootstrap --------------------------------------------------------

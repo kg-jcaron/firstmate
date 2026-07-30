@@ -228,6 +228,27 @@ fm_supervision_sweep_completion_pending() {
   return 0
 }
 
+# fm_sup_undispatched_banner_marker <state-dir>
+# Path of the volatile one-line episode marker for the claimed-but-never-dispatched
+# banner. bin/fm-guard.sh owns the banner and its claim policy; the path lives here
+# so bin/fm-session-start.sh can end the previous session's episode without a
+# second copy of the filename.
+fm_sup_undispatched_banner_marker() {
+  printf '%s/.guard-undispatched-banner\n' "$1"
+}
+
+# fm_supervision_reset_undispatched_episode <state-dir>
+# End the current claimed-but-never-dispatched episode so the next guarded command
+# prints the full banner again. bin/fm-session-start.sh calls this once on its
+# LOCKED path, so a gap nobody has acted on earns one loud banner per session
+# instead of one in its whole lifetime. Writers only; a read-only session must not
+# call it, exactly as it must not claim or clear the stale-watcher marker.
+# Always returns 0.
+fm_supervision_reset_undispatched_episode() {
+  rm -f "$(fm_sup_undispatched_banner_marker "$1")" 2>/dev/null || true
+  return 0
+}
+
 # fm_sup_display_id <id>
 # A bounded, printable rendering of an untrusted backlog id, so a hand-edited row
 # can never inject control characters or unbounded text into a banner.

@@ -12,7 +12,10 @@
 # looks like on disk. Like the tangle alarm it runs before the in-flight early
 # exit below, because it is precisely the case where no worker exists. Its full
 # banner is likewise emitted once per distinct episode (keyed to the reported id
-# set) under state/.guard-undispatched-banner.
+# set) under state/.guard-undispatched-banner. Unlike a stale beacon, that
+# condition persists exactly while nobody has acted on it, so bin/fm-session-start.sh
+# ends the episode once on its locked path: loud once per session, quiet for the
+# rest of it.
 # Then, if any task is in flight (a state/<id>.meta exists) and the watcher's
 # liveness beacon (state/.last-watcher-beat, touched every poll cycle) is
 # missing or older than FM_GUARD_GRACE seconds, prints a loud, clearly delimited
@@ -47,17 +50,20 @@ READ_ONLY=${FM_GUARD_READ_ONLY:-0}
 case "$READ_ONLY" in 1|true|TRUE|yes|YES) READ_ONLY=1 ;; *) READ_ONLY=0 ;; esac
 CONTINUE_LINE=${FM_GUARD_CONTINUE_LINE:-This is a supervision warning only; the guarded operation WILL still run.}
 
-# Volatile, home-scoped episode markers: one line = that alarm's current episode
-# key. Each is cleared when its own condition clears so a later episode re-arms.
-STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
-UNDISPATCHED_BANNER_MARKER="$STATE/.guard-undispatched-banner"
-
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-tangle-lib.sh
 . "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
+
+# Volatile, home-scoped episode markers: one line = that alarm's current episode
+# key. Each is cleared when its own condition clears so a later episode re-arms;
+# the undispatched one is additionally cleared once per locked session start
+# (bin/fm-session-start.sh), because that condition persists precisely while
+# nobody has acted on it and must stay loud on every new session.
+STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
+UNDISPATCHED_BANNER_MARKER=$(fm_sup_undispatched_banner_marker "$STATE")
 
 # Deterministic episode key from beacon state: same continuous stale beacon
 # (or continuous absence) shares a key; a recovered-then-restale beacon gets a

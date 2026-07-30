@@ -265,17 +265,22 @@ test_captain_ask_capture_rule_is_stated_at_intake() {
     "AGENTS.md lost the confirm-before-claiming-dispatch rule"
 
   # Capturing every ask immediately only stays compatible with the
-  # in-flight-with-no-worker alarm while In flight keeps promising a worker, so
-  # the backlog contract owns that invariant and section 7 must not restate it.
+  # in-flight-with-no-worker alarm while firstmate refuses to record a row as
+  # started without a worker, so the backlog contract owns that rule and section
+  # 7 must not restate it. The rule constrains what firstmate RECORDS, because a
+  # deliberately parked row legitimately keeps its in-flight row after teardown -
+  # the very case the alarm's hold exclusion protects.
   backlog_contract=$(awk '
     /^## 10\. Backlog contract$/ { found = 1; next }
     found && /^## / { exit }
     found { print }
   ' "$AGENTS")
-  assert_contains "$backlog_contract" 'An item is In flight only while a live worker exists for it' \
-    "AGENTS.md section 10 lost the In-flight-means-a-live-worker invariant"
-  assert_not_contains "$intake" 'An item is In flight only while a live worker exists for it' \
-    "the In-flight invariant has one owner in section 10 and must not be restated at intake"
+  assert_contains "$backlog_contract" 'Firstmate never records an item as In flight without a live worker for it' \
+    "AGENTS.md section 10 lost the never-record-In-flight-without-a-worker rule"
+  assert_not_contains "$backlog_contract" 'An item is In flight only while a live worker exists for it' \
+    "section 10 still asserts the absolute In-flight invariant, which contradicts the alarm's hold exclusion"
+  assert_not_contains "$intake" 'Firstmate never records an item as In flight without a live worker for it' \
+    "the In-flight recording rule has one owner in section 10 and must not be restated at intake"
   # Self-run work must be excluded from BOTH the dispatch sweep and the
   # undispatched alarm, which a captain-kind hold already does; the reason has to
   # say firstmate is working it so the hold does not read as the captain's gate.
@@ -283,7 +288,7 @@ test_captain_ask_capture_rule_is_stated_at_intake() {
     "AGENTS.md section 10 lost the captain-kind-hold routing for work firstmate performs itself"
   assert_not_contains "$backlog_contract" 'stays Queued until a worker exists' \
     "section 10 still routes firstmate-run work to plain Queued, where the dispatch sweep can spawn it"
-  pass "AGENTS.md states the captain-ask capture rule and the In-flight worker invariant"
+  pass "AGENTS.md states the captain-ask capture rule and the In-flight recording rule"
 }
 
 test_new_skill_metadata_and_triggers
