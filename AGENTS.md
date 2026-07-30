@@ -105,6 +105,7 @@ state/               volatile runtime signals; gitignored
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
+  .guard-*-banner .guard-*-banner.lock   guard alarm episode markers and their claim locks; never touch
   .completion-pending-<id>  written by teardown as it removes a task's worker record, meaning "torn down, awaiting its backlog filing"; keeps the claimed-but-never-dispatched guard quiet for that id until the row is filed or the marker expires
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
 .no-mistakes/        local validation state and evidence; gitignored
@@ -415,7 +416,7 @@ Mention cost as a courtesy when unusually much work is running, but never block 
 
 `data/backlog.md` is the durable queue.
 It tracks work items only, never agents; persistent secondmates never appear as backlog items.
-An item is In flight only while a live worker exists for it, so work firstmate performs itself, such as the `spec-linear` flow, stays Queued until a worker exists or the item is filed.
+An item is In flight only while a live worker exists for it, so work firstmate performs itself, such as the `spec-linear` flow, is recorded as a captain-kind hold whose reason states that firstmate is working the row itself and is not awaiting a captain decision, rather than left plain Queued where the dispatch sweep would pick it up.
 Work routed to a secondmate is recorded in that secondmate home's own backlog, not the main backlog.
 When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item; use `tasks-axi hold <id> --reason "<reason>" --kind captain` for a captain-gated thread.
 Unresolved decisions discovered by investigations or visual reviews follow `decision-hold-lifecycle`, which owns their mandatory backlog lifecycle.

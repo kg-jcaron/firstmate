@@ -222,9 +222,9 @@ test_compressed_agents_retains_authority_and_supervision_safety() {
   pass "compressed AGENTS.md retains authority, supervision, AFK, and X safety"
 }
 
-# spec-linear is the one built-in skill that is BOTH captain-invocable and
-# model-invocable, so its trigger cannot live in section 13 (declared agent-only)
-# and its interactive safeguards have to survive the model-invoked path.
+# spec-linear stays captain-invocable, so its trigger cannot live in section 13
+# (declared agent-only), and it no longer blocks model invocation, so its
+# interactive safeguards have to survive the model-invoked path.
 test_spec_linear_is_model_invocable_with_a_declared_trigger() {
   assert_no_grep 'disable-model-invocation' "$SPEC" \
     "spec-linear is still blocked from model invocation"
@@ -276,6 +276,13 @@ test_captain_ask_capture_rule_is_stated_at_intake() {
     "AGENTS.md section 10 lost the In-flight-means-a-live-worker invariant"
   assert_not_contains "$intake" 'An item is In flight only while a live worker exists for it' \
     "the In-flight invariant has one owner in section 10 and must not be restated at intake"
+  # Self-run work must be excluded from BOTH the dispatch sweep and the
+  # undispatched alarm, which a captain-kind hold already does; the reason has to
+  # say firstmate is working it so the hold does not read as the captain's gate.
+  assert_contains "$backlog_contract" 'is recorded as a captain-kind hold whose reason states that firstmate is working the row itself and is not awaiting a captain decision' \
+    "AGENTS.md section 10 lost the captain-kind-hold routing for work firstmate performs itself"
+  assert_not_contains "$backlog_contract" 'stays Queued until a worker exists' \
+    "section 10 still routes firstmate-run work to plain Queued, where the dispatch sweep can spawn it"
   pass "AGENTS.md states the captain-ask capture rule and the In-flight worker invariant"
 }
 
