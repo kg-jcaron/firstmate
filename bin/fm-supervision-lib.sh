@@ -249,6 +249,12 @@ fm_supervision_reset_undispatched_episode() {
   return 0
 }
 
+# Line prefix marking a reported row whose id was refused as unsafe rather than
+# checked for a worker. One owner for both the predicate that writes it and
+# bin/fm-guard.sh, which partitions on it so a malformed row is never counted as a
+# row that was checked and found to have no worker metadata.
+FM_SUP_MALFORMED_PREFIX='malformed backlog id: '
+
 # fm_sup_display_id <id>
 # A bounded, printable rendering of an untrusted backlog id, so a hand-edited row
 # can never inject control characters or unbounded text into a banner.
@@ -272,7 +278,8 @@ fm_sup_display_id() {
 #     the ordinary ship-cleanup path, so without this the alarm would fire on
 #     every normal completion and train the reader to skim past it.
 # A row whose id is not path safe is never used to probe the filesystem; it is
-# reported as malformed instead, so a hand-edited row cannot quietly hide work.
+# reported as a $FM_SUP_MALFORMED_PREFIX line instead, so a hand-edited row cannot
+# quietly hide work while staying distinguishable from a checked row.
 # A caller that already holds fm_sup_in_flight_row_records output passes it as
 # <row-records>; bin/fm-guard.sh does, so one guarded command parses once.
 # Always returns 0.
@@ -290,7 +297,7 @@ fm_supervision_undispatched() {
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     if ! fm_task_id_path_safe "$id"; then
-      printf 'malformed backlog id: %s\n' "$(fm_sup_display_id "$id")"
+      printf '%s%s\n' "$FM_SUP_MALFORMED_PREFIX" "$(fm_sup_display_id "$id")"
       continue
     fi
     [ -e "$state/$id.meta" ] && continue

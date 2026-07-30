@@ -394,6 +394,10 @@ EOF
 # An unacted in-flight-with-no-worker gap never self-clears, so the locked path
 # ends that alarm's episode once per session: loud on every new session, quiet for
 # the rest of it. The read-only path must leave the marker exactly as it found it.
+# The world here deliberately makes bootstrap's fleet-sync sweep actually run, and
+# that sweep's first action is a guard call whose output bootstrap discards. If the
+# episode reset happened before it, that discarded call would spend the session's
+# one full banner and the digest would carry only the concise reminder.
 test_undispatched_banner_rearms_once_per_locked_session() {
   local rec root home fakebin marker holder_pid out before after
   rec=$(new_world undispatched-rearm)
@@ -407,6 +411,15 @@ EOF
 ## In flight
 - [ ] ghost - Recorded as started, never spawned (repo: sample) (kind: ship)
 EOF
+
+  # What the real bootstrap fleet sync does first, with its output discarded.
+  mkdir -p "$home/projects" "$root/bin"
+  cat > "$root/bin/fm-fleet-sync.sh" <<SH
+#!/usr/bin/env bash
+: > "$home/state/.fleet-sync-stub-ran"
+"$ROOT/bin/fm-guard.sh" || true
+SH
+  chmod +x "$root/bin/fm-fleet-sync.sh"
 
   # A previous session already announced this episode, so a plain guarded command
   # now prints only the concise reminder.
@@ -435,12 +448,24 @@ EOF
   assert_not_contains "$out" "BACKLOG SAYS STARTED - NO WORKER EXISTS" \
     "a read-only session start re-armed an episode it does not own"
 
-  # A locked session start ends the episode, so the digest carries the full banner.
+  # A locked session start ends the episode, so the digest carries the full banner
+  # even though the discarded fleet-sync guard call already ran in this session.
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "lock acquired: harness pid" "the locked session start did not acquire the lock"
+  assert_present "$home/state/.fleet-sync-stub-ran" \
+    "the fleet-sync sweep did not run, so the discarded guard call was never exercised"
   assert_contains "$out" "BACKLOG SAYS STARTED - NO WORKER EXISTS" \
     "a locked session start did not re-arm the full in-flight-with-no-worker banner"
   assert_contains "$out" "ghost" "the re-armed banner did not name the dropped item"
+  assert_not_contains "$out" "still recorded as started with no worker" \
+    "the digest must carry the full banner, not a reminder for an episode nobody saw"
+
+  # And the rest of that session stays quiet: one full banner per session, not one
+  # on every fleet command.
+  out=$(env FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
+    "$ROOT/bin/fm-guard.sh" 2>&1)
+  assert_not_contains "$out" "BACKLOG SAYS STARTED - NO WORKER EXISTS" \
+    "a later command in the same session repeated the full banner"
   pass "a locked session start re-arms the in-flight-with-no-worker banner; a read-only one leaves it alone"
 }
 

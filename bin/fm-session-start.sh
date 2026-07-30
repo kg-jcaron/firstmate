@@ -265,15 +265,6 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '●  otherwise mutate fleet state from this session.\n'
     printf '%s\n' "$BAR"
   }
-else
-  # A locked session earns one full in-flight-with-no-worker banner: end the
-  # previous session's episode here, so the first fm-guard.sh call below (the
-  # bootstrap fleet sync, then the wake drain) prints it in full and later
-  # guarded commands in this session print the concise reminder instead. That
-  # alarm never self-clears while the gap persists, so without this a dropped ask
-  # would earn one loud banner in its entire lifetime. A read-only session must
-  # leave the marker alone, exactly as it leaves the stale-watcher marker alone.
-  fm_supervision_reset_undispatched_episode "$STATE"
 fi
 
 # --- 2. bootstrap --------------------------------------------------------
@@ -305,6 +296,15 @@ if [ "$READ_ONLY" -eq 1 ]; then
   GUARD_OUT=$(FM_GUARD_READ_ONLY=1 "$SCRIPT_DIR/fm-guard.sh" 2>&1)
   [ -n "$GUARD_OUT" ] && printf '%s\n' "$GUARD_OUT"
 else
+  # A locked session earns one full in-flight-with-no-worker banner, and that
+  # alarm never self-clears while the gap persists, so without this reset a
+  # dropped ask would earn one loud banner in its entire lifetime. End the
+  # previous session's episode HERE rather than at the lock step: step 2's
+  # bootstrap fleet sync also runs fm-guard.sh, but with its output discarded, so
+  # an earlier reset would be spent on a banner nobody ever reads. The drain below
+  # is the first guard call whose output lands in this digest. A read-only session
+  # must leave the marker alone, exactly as it leaves the stale-watcher marker.
+  fm_supervision_reset_undispatched_episode "$STATE"
   DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"

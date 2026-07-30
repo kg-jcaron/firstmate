@@ -14,8 +14,8 @@
 # banner is likewise emitted once per distinct episode (keyed to the reported id
 # set) under state/.guard-undispatched-banner. Unlike a stale beacon, that
 # condition persists exactly while nobody has acted on it, so bin/fm-session-start.sh
-# ends the episode once on its locked path: loud once per session, quiet for the
-# rest of it.
+# ends the episode once on its locked path, after bootstrap's discarded-output
+# sweeps: loud once per session, quiet for the rest of it.
 # Then, if any task is in flight (a state/<id>.meta exists) and the watcher's
 # liveness beacon (state/.last-watcher-beat, touched every poll cycle) is
 # missing or older than FM_GUARD_GRACE seconds, prints a loud, clearly delimited
@@ -149,6 +149,38 @@ fm_guard_digest() {
   fi
 }
 
+# fm_guard_partition_lines <lines> <want-malformed>
+# Split the undispatched predicate's output on the malformed-row prefix it owns
+# (bin/fm-supervision-lib.sh): want-malformed 1 keeps only the refused-id rows, 0
+# keeps only the ids that were actually checked for worker metadata.
+fm_guard_partition_lines() {
+  printf '%s\n' "$1" | awk -v p="$FM_SUP_MALFORMED_PREFIX" -v want="$2" '
+    NF == 0 { next }
+    (index($0, p) == 1) == (want + 0) { print }
+  '
+}
+
+fm_guard_line_count() {
+  if [ -z "$1" ]; then
+    printf '0\n'
+    return 0
+  fi
+  printf '%s\n' "$1" | wc -l | tr -d ' '
+}
+
+# Print one bounded, bulleted list inside the banner, then say how many entries it
+# withheld, so a neglected backlog cannot flood every fleet command while the
+# count line above still reports the true total.
+fm_guard_print_bounded_list() {
+  local lines=$1 total=$2 entry
+  printf '%s\n' "$lines" | head -"$UNDISPATCHED_LIST_MAX" | while IFS= read -r entry; do
+    printf '●      %s\n' "$entry"
+  done
+  if [ "$total" -gt "$UNDISPATCHED_LIST_MAX" ]; then
+    printf '●      ... and %s more\n' "$((total - UNDISPATCHED_LIST_MAX))"
+  fi
+}
+
 # Worktree-tangle alarm, checked FIRST and independent of in-flight tasks: the
 # firstmate PRIMARY checkout (FM_ROOT) must stay on its default branch. If a
 # crewmate's branch/commits landed here instead of in its own isolated worktree,
@@ -185,6 +217,10 @@ fi
 # yet filed - are what keep this quiet enough to stay worth reading; see
 # bin/fm-supervision-lib.sh. The sweep below keeps the teardown markers
 # self-clearing and bounded, and only a writable session may run it.
+# A row whose id the predicate refused as unsafe is counted and remedied
+# separately: no metadata lookup ever ran for it, so it needs the row repaired
+# rather than a worker spawned, and folding it into the metadata-gap count would
+# make that count line false.
 # Like the watcher-down banner, the full banner prints once per episode, keyed to
 # the set of reported ids, so a persistent gap does not repaint on every fleet
 # command. This dedup is independent of the other alarms in both directions.
@@ -194,7 +230,14 @@ in_flight_rows=$(fm_sup_in_flight_row_records "$BACKLOG")
 [ "$READ_ONLY" -eq 1 ] || fm_supervision_sweep_completion_pending "$BACKLOG" "$STATE" "$in_flight_rows"
 undispatched=$(fm_supervision_undispatched "$BACKLOG" "$STATE" "$in_flight_rows")
 if [ -n "$undispatched" ]; then
-  undispatched_n=$(printf '%s\n' "$undispatched" | wc -l | tr -d ' ')
+  # Two classes, reported separately so each count line is literally true: rows
+  # that were checked and have no worker metadata, and rows whose id was refused
+  # as unsafe before any lookup could happen. The latter need the row repaired,
+  # not a worker spawned, and no metadata check ever ran for them.
+  undispatched_ids=$(fm_guard_partition_lines "$undispatched" 0)
+  malformed_rows=$(fm_guard_partition_lines "$undispatched" 1)
+  undispatched_n=$(fm_guard_line_count "$undispatched_ids")
+  malformed_n=$(fm_guard_line_count "$malformed_rows")
   undispatched_key=$(fm_guard_digest "$(printf '%s\n' "$undispatched" | LC_ALL=C sort)")
   print_undispatched_banner=0
   if [ "$READ_ONLY" -eq 1 ]; then
@@ -207,24 +250,36 @@ if [ -n "$undispatched" ]; then
     {
       printf '●%s\n' "$urule"
       printf '●  BACKLOG SAYS STARTED - NO WORKER EXISTS\n'
-      printf '●  %s backlog item(s) are in flight, unheld, and have no crewmate metadata:\n' "$undispatched_n"
-      printf '%s\n' "$undispatched" | head -"$UNDISPATCHED_LIST_MAX" | while IFS= read -r undispatched_id; do
-        printf '●      %s\n' "$undispatched_id"
-      done
-      if [ "$undispatched_n" -gt "$UNDISPATCHED_LIST_MAX" ]; then
-        printf '●      ... and %s more\n' "$((undispatched_n - UNDISPATCHED_LIST_MAX))"
+      if [ "$undispatched_n" -gt 0 ]; then
+        printf '●  %s backlog item(s) are in flight, unheld, and have no crewmate metadata:\n' "$undispatched_n"
+        fm_guard_print_bounded_list "$undispatched_ids" "$undispatched_n"
+        printf '●  Each was recorded as started but never spawned, or its worker is gone and the row was never filed.\n'
+        if [ "$READ_ONLY" -eq 1 ]; then
+          printf '●  This read-only session should report the gap, not repair it.\n'
+        else
+          printf '●  Do not report these as dispatched. Spawn the work, hold it with a reason, or file it Done.\n'
+        fi
       fi
-      printf '●  Each was recorded as started but never spawned, or its worker is gone and the row was never filed.\n'
-      if [ "$READ_ONLY" -eq 1 ]; then
-        printf '●  This read-only session should report the gap, not repair it.\n'
-      else
-        printf '●  Do not report these as dispatched. Spawn the work, hold it with a reason, or file it Done.\n'
+      if [ "$malformed_n" -gt 0 ]; then
+        printf '●  %s in-flight row(s) carry an unusable id, so no worker could be looked up for them:\n' "$malformed_n"
+        fm_guard_print_bounded_list "$malformed_rows" "$malformed_n"
+        if [ "$READ_ONLY" -eq 1 ]; then
+          printf '●  This read-only session should report the malformed rows, not repair them.\n'
+        else
+          printf '●  Repair those rows in %s so each one can be checked for a worker.\n' "$BACKLOG"
+        fi
       fi
       printf '●%s\n' "$urule"
     } >&2
-  else
+  elif [ "$undispatched_n" -eq 0 ]; then
+    printf 'WARNING: %s in-flight backlog row(s) still carry an unusable id (same set) - full banner already printed this episode.\n' \
+      "$malformed_n" >&2
+  elif [ "$malformed_n" -eq 0 ]; then
     printf 'WARNING: %s backlog item(s) still recorded as started with no worker (same set) - full banner already printed this episode.\n' \
       "$undispatched_n" >&2
+  else
+    printf 'WARNING: %s backlog item(s) still recorded as started with no worker, and %s row(s) with an unusable id (same set) - full banner already printed this episode.\n' \
+      "$undispatched_n" "$malformed_n" >&2
   fi
 elif [ "$READ_ONLY" -eq 0 ]; then
   # Condition cleared: end the episode so a later recurrence re-arms the banner.

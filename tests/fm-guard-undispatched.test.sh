@@ -303,6 +303,21 @@ EOF
   out=$(undispatched_of "$dir")
   [ "$out" = "malformed backlog id: ..?outside
 ghost" ] || fail "malformed id was not surfaced safely, got: $out"
+
+  # No metadata check ever ran for the malformed row - the path-safety refusal
+  # happens first - so counting it as a metadata gap would make the count line
+  # false, and the spawn/hold/file remedy is not the remedy that row needs.
+  out=$(run_guard "$dir")
+  assert_contains "$out" "1 backlog item(s) are in flight, unheld, and have no crewmate metadata" \
+    "the metadata-gap count must exclude the row that was never checked"
+  assert_contains "$out" "1 in-flight row(s) carry an unusable id" \
+    "the banner must report the malformed row as its own class"
+  assert_contains "$out" "malformed backlog id: ..?outside" \
+    "the malformed row must stay visible in the banner"
+  assert_contains "$out" "Repair those rows in" \
+    "the malformed row needs a repair remedy, not a spawn/hold/file remedy"
+  assert_contains "$out" "Do not report these as dispatched" \
+    "the genuine gap must keep its own remedy alongside the malformed one"
   pass "undispatched predicate: a malformed id is reported, never used as a path"
 }
 
