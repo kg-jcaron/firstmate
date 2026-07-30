@@ -415,6 +415,7 @@ Mention cost as a courtesy when unusually much work is running, but never block 
 
 `data/backlog.md` is the durable queue.
 It tracks work items only, never agents; persistent secondmates never appear as backlog items.
+An item is In flight only while a live worker exists for it, so work firstmate performs itself, such as the `spec-linear` flow, stays Queued until a worker exists or the item is filed.
 Work routed to a secondmate is recorded in that secondmate home's own backlog, not the main backlog.
 When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item; use `tasks-axi hold <id> --reason "<reason>" --kind captain` for a captain-gated thread.
 Unresolved decisions discovered by investigations or visual reviews follow `decision-hold-lifecycle`, which owns their mandatory backlog lifecycle.

@@ -157,6 +157,36 @@ EOF
   pass "undispatched predicate: body lines and an absent backlog report nothing"
 }
 
+# A hand-edited note can leave a column-0 "#" line inside the section: a pasted
+# command, a deeper sub-heading, an issue reference. Only a real "## " heading
+# ends the section, exactly as the repo's other backlog parsers read it, because
+# treating any "#" line as a heading would silently hide every row after it and
+# make the alarm read as an all-clear.
+test_lib_stray_hash_line_does_not_end_the_section() {
+  local dir out
+  dir=$(make_case lib-stray-hash <<'EOF'
+# Backlog
+
+## In flight
+- [ ] first-ghost - Never spawned (repo: sample) (kind: ship)
+#!/usr/bin/env bash - pasted from a note while editing by hand
+### Follow-up detail
+#691 tracks the upstream issue
+- [ ] second-ghost - Never spawned, after the stray lines (repo: sample) (kind: ship)
+
+## Queued
+- [ ] queued-row - Queued work has no worker by definition (repo: sample) (kind: ship)
+
+## Done
+- [x] filed - Already filed (repo: sample) (kind: ship) (done 2026-07-29)
+EOF
+  )
+  out=$(undispatched_of "$dir")
+  [ "$out" = "first-ghost
+second-ghost" ] || fail "a stray column-0 '#' line hid in-flight rows, got: $out"
+  pass "undispatched predicate: only a real '## ' heading ends the In flight section"
+}
+
 # --- fm-guard: the surface that gets read -----------------------------------
 
 # The alarm has to fire with ZERO workers alive, which is exactly the state the
@@ -555,6 +585,7 @@ test_lib_hold_matching_is_exact
 test_lib_lapsed_hold_until_is_not_a_hold
 test_lib_malformed_id_is_surfaced_not_used_as_a_path
 test_lib_ignores_body_lines_and_absent_backlog
+test_lib_stray_hash_line_does_not_end_the_section
 test_marker_silences_only_while_fresh
 test_sweep_clears_filed_and_expired_markers
 test_guard_fires_with_no_workers_at_all

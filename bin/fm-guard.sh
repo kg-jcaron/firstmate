@@ -182,8 +182,11 @@ fi
 # Like the watcher-down banner, the full banner prints once per episode, keyed to
 # the set of reported ids, so a persistent gap does not repaint on every fleet
 # command. This dedup is independent of the other alarms in both directions.
-[ "$READ_ONLY" -eq 1 ] || fm_supervision_sweep_completion_pending "$BACKLOG" "$STATE"
-undispatched=$(fm_supervision_undispatched "$BACKLOG" "$STATE")
+# One backlog parse serves both the sweep and the predicate; the sweep still runs
+# first, so a row filed just before this call clears its marker in the same call.
+in_flight_rows=$(fm_sup_in_flight_row_records "$BACKLOG")
+[ "$READ_ONLY" -eq 1 ] || fm_supervision_sweep_completion_pending "$BACKLOG" "$STATE" "$in_flight_rows"
+undispatched=$(fm_supervision_undispatched "$BACKLOG" "$STATE" "$in_flight_rows")
 if [ -n "$undispatched" ]; then
   undispatched_n=$(printf '%s\n' "$undispatched" | wc -l | tr -d ' ')
   undispatched_key=$(fm_guard_digest "$(printf '%s\n' "$undispatched" | LC_ALL=C sort)")

@@ -1144,8 +1144,11 @@ rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" "$STATE/$ID.
 # dispatched. Record the gap deterministically so the claimed-but-never-dispatched
 # guard stays silent for this id, instead of crying wolf on every normal cleanup.
 # The marker is self-clearing and expires, so it can never blind that alarm for
-# a row that really is dropped (bin/fm-supervision-lib.sh).
-fm_supervision_mark_completion_pending "$STATE" "$ID" || true
+# a row that really is dropped (bin/fm-supervision-lib.sh). A secondmate is never
+# a backlog work item, so it can never have a row awaiting a filing.
+if [ "$KIND" != secondmate ]; then
+  fm_supervision_mark_completion_pending "$STATE" "$ID" || true
+fi
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi

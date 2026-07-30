@@ -251,7 +251,7 @@ test_spec_linear_is_model_invocable_with_a_declared_trigger() {
 # The captain sends asks mid-turn, so the durable half of not dropping them is a
 # capture rule firstmate reads at intake plus the deterministic guard check.
 test_captain_ask_capture_rule_is_stated_at_intake() {
-  local intake
+  local intake backlog_contract
   intake=$(awk '
     /^### Intake and authority$/ { found = 1; next }
     found && /^### / { exit }
@@ -263,7 +263,20 @@ test_captain_ask_capture_rule_is_stated_at_intake() {
     "AGENTS.md intake lost the later-ask-does-not-supersede rule"
   assert_grep 'Never tell the captain work is dispatched before that confirmation.' "$AGENTS" \
     "AGENTS.md lost the confirm-before-claiming-dispatch rule"
-  pass "AGENTS.md states the captain-ask capture rule where intake reads it"
+
+  # Capturing every ask immediately only stays compatible with the
+  # in-flight-with-no-worker alarm while In flight keeps promising a worker, so
+  # the backlog contract owns that invariant and section 7 must not restate it.
+  backlog_contract=$(awk '
+    /^## 10\. Backlog contract$/ { found = 1; next }
+    found && /^## / { exit }
+    found { print }
+  ' "$AGENTS")
+  assert_contains "$backlog_contract" 'An item is In flight only while a live worker exists for it' \
+    "AGENTS.md section 10 lost the In-flight-means-a-live-worker invariant"
+  assert_not_contains "$intake" 'An item is In flight only while a live worker exists for it' \
+    "the In-flight invariant has one owner in section 10 and must not be restated at intake"
+  pass "AGENTS.md states the captain-ask capture rule and the In-flight worker invariant"
 }
 
 test_new_skill_metadata_and_triggers

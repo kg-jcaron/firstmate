@@ -88,6 +88,11 @@ fm_supervision_unhealthy() {
 # The one parser for structured backlog rows under the "In flight" heading.
 # Prints "<held|open><TAB><id>" per row. Understands both row forms the tasks-axi
 # markdown backend writes: "- [ ] <id> - ..." and "- **<id>** - ...".
+# Section detection anchors on "^##[[:space:]]+" exactly like the repo's other
+# backlog parsers (fm-backlog-handoff.sh, fm-session-start.sh,
+# fm-fleet-snapshot.sh), so a stray column-0 "#" line in a hand-edited note - a
+# pasted command, a deeper sub-heading, a "#691" reference - cannot end the
+# section early and silently hide every row after it.
 # A hold is ACTIVE only when the row carries a real "hold:" reason AND either no
 # "hold-until:" date or a date still in the future, matching tasks-axi's own
 # semantics: a date gate is inactive on and after that date, so a lapsed gate is
@@ -97,10 +102,10 @@ fm_sup_in_flight_row_records() {
   local backlog=$1
   [ -f "$backlog" ] || return 0
   awk -v today="$(date +%Y-%m-%d)" '
-    /^#/ {
+    /^##[[:space:]]+/ {
       section = $0
-      sub(/^#+[ \t]*/, "", section)
-      sub(/[ \t]+$/, "", section)
+      sub(/^##[[:space:]]+/, "", section)
+      sub(/[[:space:]]+$/, "", section)
       next
     }
     section != "In flight" { next }
@@ -131,10 +136,18 @@ fm_sup_in_flight_row_records() {
   ' "$backlog"
 }
 
-# fm_sup_in_flight_unheld_ids <backlog-file>
-# Ids of in-flight rows carrying no ACTIVE hold, one per line.
+# fm_sup_in_flight_unheld_ids <backlog-file> [row-records]
+# Ids of in-flight rows carrying no ACTIVE hold, one per line. A caller that
+# already holds fm_sup_in_flight_row_records output passes it as <row-records> so
+# one guarded command parses the backlog once.
 fm_sup_in_flight_unheld_ids() {
-  fm_sup_in_flight_row_records "$1" | awk -F'\t' '$1 == "open" { print $2 }'
+  local backlog=$1 records
+  if [ "$#" -ge 2 ]; then
+    records=$2
+  else
+    records=$(fm_sup_in_flight_row_records "$backlog")
+  fi
+  printf '%s\n' "$records" | awk -F'\t' '$1 == "open" { print $2 }'
 }
 
 # fm_sup_completion_pending_marker <state-dir> <id>
@@ -155,27 +168,43 @@ fm_supervision_mark_completion_pending() {
   return 0
 }
 
-# fm_sup_completion_pending_fresh <state-dir> <id>
-# True while <id> carries an unexpired completion-pending marker.
+# fm_sup_completion_pending_fresh <state-dir> <id> [now-epoch]
+# True while <id> carries an unexpired completion-pending marker. A caller
+# checking several ids passes one <now-epoch> so the clock is read once.
 fm_sup_completion_pending_fresh() {
-  local state=$1 id=$2 marker m
+  local state=$1 id=$2 now=${3:-} marker m
   marker=$(fm_sup_completion_pending_marker "$state" "$id")
   [ -e "$marker" ] || return 1
   m=$(fm_sup_stat_mtime "$marker")
   [ -n "$m" ] || return 1
-  [ "$(( $(date +%s) - m ))" -lt "$FM_SUP_COMPLETION_PENDING_MAX_AGE" ]
+  [ -n "$now" ] || now=$(date +%s)
+  [ "$((now - m))" -lt "$FM_SUP_COMPLETION_PENDING_MAX_AGE" ]
 }
 
-# fm_supervision_sweep_completion_pending <backlog-file> <state-dir>
+# fm_supervision_sweep_completion_pending <backlog-file> <state-dir> [row-records]
 # Keep the marker set self-clearing and bounded: drop every marker whose row is
 # no longer in flight (it has been filed) and every marker past the max age (so a
 # torn-down-but-never-filed row surfaces again). Writers only; callers in
-# read-only mode must not run this. Always returns 0.
+# read-only mode must not run this. A caller that already holds
+# fm_sup_in_flight_row_records output passes it as <row-records>.
+# Always returns 0.
 fm_supervision_sweep_completion_pending() {
-  local backlog=$1 state=$2 marker id now m in_flight
+  local backlog=$1 state=$2 records marker id now m in_flight found=0
   [ -d "$state" ] || return 0
+  # A home with no markers is the ordinary case, so cost nothing there.
+  for marker in "$state"/.completion-pending-*; do
+    [ -e "$marker" ] || continue
+    found=1
+    break
+  done
+  [ "$found" -eq 1 ] || return 0
+  if [ "$#" -ge 3 ]; then
+    records=$3
+  else
+    records=$(fm_sup_in_flight_row_records "$backlog")
+  fi
   now=$(date +%s)
-  in_flight=$(fm_sup_in_flight_row_records "$backlog" | awk -F'\t' '{ print $2 }')
+  in_flight=$(printf '%s\n' "$records" | awk -F'\t' '{ print $2 }')
   for marker in "$state"/.completion-pending-*; do
     [ -e "$marker" ] || continue
     id=${marker##*/.completion-pending-}
@@ -208,7 +237,7 @@ fm_sup_display_id() {
   printf '%s\n' "$rendered"
 }
 
-# fm_supervision_undispatched <backlog-file> <state-dir>
+# fm_supervision_undispatched <backlog-file> <state-dir> [row-records]
 # Print the id of every in-flight backlog row that has no ACTIVE hold, no
 # state/<id>.meta, and no fresh completion-pending marker, one per line: work
 # recorded as started for which no worker exists, which is what a dropped or
@@ -223,13 +252,20 @@ fm_sup_display_id() {
 #     every normal completion and train the reader to skim past it.
 # A row whose id is not path safe is never used to probe the filesystem; it is
 # reported as malformed instead, so a hand-edited row cannot quietly hide work.
+# A caller that already holds fm_sup_in_flight_row_records output passes it as
+# <row-records>; bin/fm-guard.sh does, so one guarded command parses once.
 # Always returns 0.
 # Related but deliberately separate: fm-fleet-snapshot.sh's secondmate-home
 # summary invalidates a read when an in-flight row has no child metadata. That
 # one answers "can a parent trust this summary" and applies no hold exclusion, so
 # the two must not be collapsed into each other.
 fm_supervision_undispatched() {
-  local backlog=$1 state=$2 id
+  local backlog=$1 state=$2 unheld id now=
+  if [ "$#" -ge 3 ]; then
+    unheld=$(fm_sup_in_flight_unheld_ids "$backlog" "$3")
+  else
+    unheld=$(fm_sup_in_flight_unheld_ids "$backlog")
+  fi
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     if ! fm_task_id_path_safe "$id"; then
@@ -237,10 +273,11 @@ fm_supervision_undispatched() {
       continue
     fi
     [ -e "$state/$id.meta" ] && continue
-    fm_sup_completion_pending_fresh "$state" "$id" && continue
+    [ -n "$now" ] || now=$(date +%s)
+    fm_sup_completion_pending_fresh "$state" "$id" "$now" && continue
     printf '%s\n' "$id"
   done <<EOF
-$(fm_sup_in_flight_unheld_ids "$backlog")
+$unheld
 EOF
   return 0
 }
