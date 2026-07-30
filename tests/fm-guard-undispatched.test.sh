@@ -90,6 +90,14 @@ undispatched_of() {
   fm_supervision_undispatched "$home/data/backlog.md" "$home/state"
 }
 
+# The predicate types every record in its first tab-separated field, so the guard
+# can count a checked-but-workerless row separately from a row whose id it
+# refused. Most cases only care about the checked class; the malformed case pins
+# the raw record shape itself.
+undispatched_ids_of() {
+  undispatched_of "$1" | awk -F'\t' '$1 == "ok" { print $2 }'
+}
+
 # --- shared lib: the predicate itself ---------------------------------------
 
 # One backlog exercising every discriminator at once: a spawned item, a held
@@ -115,7 +123,7 @@ EOF
   home=$(case_home "$dir")
   fm_write_meta "$home/state/spawned.meta" "window=firstmate:fm-spawned" "kind=ship"
 
-  out=$(undispatched_of "$dir")
+  out=$(undispatched_ids_of "$dir")
   [ "$out" = "ghost
 bold-ghost-row" ] || fail "predicate reported the wrong ids, got: $out"
   pass "undispatched predicate: only unheld in-flight rows with no metadata"
@@ -123,19 +131,27 @@ bold-ghost-row" ] || fail "predicate reported the wrong ids, got: $out"
 
 # A hold reason is free text the captain wrote and can be long, multi-clause, and
 # full of punctuation. It must still exclude the row, and "hold-kind:" alone must
-# never be mistaken for a hold reason.
+# never be mistaken for a hold reason. The hold KIND is deliberately irrelevant
+# here: work firstmate performs itself is parked rather than captain-held, so
+# that routing only stays quiet while a parked hold excludes its row exactly as a
+# captain hold does.
 test_lib_hold_matching_is_exact() {
   local dir out
   dir=$(make_case lib-holds <<'EOF'
 ## In flight
 - [ ] long-hold - Long parked item (repo: sample) (kind: ship) (hold: CONSOLIDATED into PR 691 - both halves, 52 files, CI green, still DRAFT. CAPTAIN GATE: run pulumi -s stage up first.) (hold-kind: captain)
+- [ ] self-run - Firstmate is working this row itself (repo: sample) (kind: ship) (hold: firstmate is working the row itself and is not awaiting a captain decision) (hold-kind: parked)
 - [ ] kind-only - Carries hold-kind but no hold reason (repo: sample) (kind: ship) (hold-kind: captain)
 - [ ] comma-hold - Comma-separated metadata, repo: sample, hold: waiting on the captain
 EOF
   )
-  out=$(undispatched_of "$dir")
+  out=$(undispatched_ids_of "$dir")
   [ "$out" = "kind-only" ] || fail "hold matching is wrong, expected only kind-only, got: $out"
-  pass "undispatched predicate: only a real hold reason excludes a row"
+
+  out=$(run_guard "$dir")
+  assert_not_contains "$out" "self-run" \
+    "a parked hold must exclude its row from the banner exactly as a captain hold does"
+  pass "undispatched predicate: only a real hold reason excludes a row, whatever its kind"
 }
 
 # Free-form body lines sit under a row and can say anything, including the word
@@ -149,7 +165,7 @@ test_lib_ignores_body_lines_and_absent_backlog() {
   - a nested bullet in the body, not a backlog row
 EOF
   )
-  out=$(undispatched_of "$dir")
+  out=$(undispatched_ids_of "$dir")
   [ "$out" = "ghost" ] || fail "body lines leaked into the predicate, got: $out"
 
   out=$(fm_supervision_undispatched "$TMP_ROOT/nope/backlog.md" "$TMP_ROOT/nope")
@@ -181,7 +197,7 @@ test_lib_stray_hash_line_does_not_end_the_section() {
 - [x] filed - Already filed (repo: sample) (kind: ship) (done 2026-07-29)
 EOF
   )
-  out=$(undispatched_of "$dir")
+  out=$(undispatched_ids_of "$dir")
   [ "$out" = "first-ghost
 second-ghost" ] || fail "a stray column-0 '#' line hid in-flight rows, got: $out"
   pass "undispatched predicate: only a real '## ' heading ends the In flight section"
@@ -279,7 +295,7 @@ test_lib_lapsed_hold_until_is_not_a_hold() {
 - [ ] open-hold - Held with no date at all (repo: sample) (kind: ship) (hold: awaiting captain decision) (hold-kind: captain)
 EOF
   )
-  out=$(undispatched_of "$dir")
+  out=$(undispatched_ids_of "$dir")
   [ "$out" = "lapsed
 today-gate" ] || fail "hold-until handling is wrong, expected the lapsed gates only, got: $out"
   pass "undispatched predicate: a lapsed hold-until is reported, a future one stays held"
@@ -301,8 +317,8 @@ EOF
   fm_write_meta "$home/outside.meta" "window=firstmate:fm-outside" "kind=ship"
 
   out=$(undispatched_of "$dir")
-  [ "$out" = "malformed backlog id: ..?outside
-ghost" ] || fail "malformed id was not surfaced safely, got: $out"
+  [ "$out" = "$(printf 'malformed\t..?outside\nok\tghost')" ] \
+    || fail "malformed id was not surfaced safely, got: $out"
 
   # No metadata check ever ran for the malformed row - the path-safety refusal
   # happens first - so counting it as a metadata gap would make the count line
@@ -336,18 +352,18 @@ EOF
   home=$(case_home "$dir")
   : > "$(completion_marker "$dir" torn-down)"
 
-  out=$(undispatched_of "$dir")
+  out=$(undispatched_ids_of "$dir")
   [ "$out" = "ghost" ] || fail "a freshly torn-down row should be silent while a never-spawned row fires, got: $out"
 
   # Expired: the same row must surface again rather than stay hidden forever.
   # The override is scoped to the command substitution's subshell.
-  out=$(FM_SUP_COMPLETION_PENDING_MAX_AGE=0; undispatched_of "$dir")
+  out=$(FM_SUP_COMPLETION_PENDING_MAX_AGE=0; undispatched_ids_of "$dir")
   [ "$out" = "torn-down
 ghost" ] || fail "an expired marker must stop excluding its row, got: $out"
 
   # Removed by the sweep once the row is filed: same result.
   rm -f "$(completion_marker "$dir" torn-down)"
-  out=$(undispatched_of "$dir")
+  out=$(undispatched_ids_of "$dir")
   [ "$out" = "torn-down
 ghost" ] || fail "a removed marker must stop excluding its row, got: $out"
   pass "undispatched predicate: a teardown marker silences its row only while fresh"

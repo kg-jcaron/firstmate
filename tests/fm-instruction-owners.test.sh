@@ -282,10 +282,16 @@ test_captain_ask_capture_rule_is_stated_at_intake() {
   assert_not_contains "$intake" 'Firstmate never records an item as In flight without a live worker for it' \
     "the In-flight recording rule has one owner in section 10 and must not be restated at intake"
   # Self-run work must be excluded from BOTH the dispatch sweep and the
-  # undispatched alarm, which a captain-kind hold already does; the reason has to
-  # say firstmate is working it so the hold does not read as the captain's gate.
-  assert_contains "$backlog_contract" 'is recorded as a captain-kind hold whose reason states that firstmate is working the row itself and is not awaiting a captain decision' \
-    "AGENTS.md section 10 lost the captain-kind-hold routing for work firstmate performs itself"
+  # undispatched alarm, which any active hold already does; the reason has to say
+  # firstmate is working it so the row does not read as the captain's gate. The
+  # kind is parked rather than captain because the decision surfaces and the
+  # decision-hold gates key on the captain kind.
+  assert_contains "$backlog_contract" 'is recorded as a `parked` hold whose reason states that firstmate is working the row itself and is not awaiting a captain decision' \
+    "AGENTS.md section 10 lost the parked-hold routing for work firstmate performs itself"
+  assert_contains "$backlog_contract" 'the `captain` hold kind below is the shape the decision surfaces and gates key on and stays reserved for decisions the captain actually owes' \
+    "AGENTS.md section 10 lost the parked-versus-captain hold-kind distinction"
+  assert_not_contains "$backlog_contract" 'is recorded as a captain-kind hold' \
+    "section 10 still routes firstmate-run work to a captain-kind hold, which the decision surfaces read as a captain gate"
   assert_not_contains "$backlog_contract" 'stays Queued until a worker exists' \
     "section 10 still routes firstmate-run work to plain Queued, where the dispatch sweep can spawn it"
   pass "AGENTS.md states the captain-ask capture rule and the In-flight recording rule"

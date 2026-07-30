@@ -149,17 +149,6 @@ fm_guard_digest() {
   fi
 }
 
-# fm_guard_partition_lines <lines> <want-malformed>
-# Split the undispatched predicate's output on the malformed-row prefix it owns
-# (bin/fm-supervision-lib.sh): want-malformed 1 keeps only the refused-id rows, 0
-# keeps only the ids that were actually checked for worker metadata.
-fm_guard_partition_lines() {
-  printf '%s\n' "$1" | awk -v p="$FM_SUP_MALFORMED_PREFIX" -v want="$2" '
-    NF == 0 { next }
-    (index($0, p) == 1) == (want + 0) { print }
-  '
-}
-
 fm_guard_line_count() {
   if [ -z "$1" ]; then
     printf '0\n'
@@ -234,8 +223,10 @@ if [ -n "$undispatched" ]; then
   # that were checked and have no worker metadata, and rows whose id was refused
   # as unsafe before any lookup could happen. The latter need the row repaired,
   # not a worker spawned, and no metadata check ever ran for them.
-  undispatched_ids=$(fm_guard_partition_lines "$undispatched" 0)
-  malformed_rows=$(fm_guard_partition_lines "$undispatched" 1)
+  # The predicate types every record in its first tab-separated field, so this
+  # banner owns the malformed wording rather than parsing it back out of prose.
+  undispatched_ids=$(printf '%s\n' "$undispatched" | awk -F'\t' '$1 == "ok" { print $2 }')
+  malformed_rows=$(printf '%s\n' "$undispatched" | awk -F'\t' '$1 == "malformed" { print "malformed backlog id: " $2 }')
   undispatched_n=$(fm_guard_line_count "$undispatched_ids")
   malformed_n=$(fm_guard_line_count "$malformed_rows")
   undispatched_key=$(fm_guard_digest "$(printf '%s\n' "$undispatched" | LC_ALL=C sort)")
