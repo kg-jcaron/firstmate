@@ -107,10 +107,15 @@ jobs:
   tests-portable-serial:
     name: Behavior portable serial
     runs-on: ubuntu-latest
-    # Measured serial remainder is ~13 min wall without Herdr. Cap is a hang
-    # tripwire above observed p99 script cost and suite wall, not the expected
-    # healthy end (interim 25m full-suite slack reduced after sharding).
-    timeout-minutes: 20
+    # Cap is a hang tripwire above observed p99 script cost and suite wall, not
+    # the expected healthy end. Upstream measured ~13 min wall without Herdr and
+    # capped at 20. This fork's runners consistently land near 18-19 min of pure
+    # test time for the same lane, so 20 fired as a false positive on a fully
+    # passing run (69 of 70 files done, every one exit=0, at the cut). Raised to
+    # 30 to keep the tripwire meaningful without failing healthy runs; the fork's
+    # own three extra serial files total under a minute, so they are not the
+    # driver.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
