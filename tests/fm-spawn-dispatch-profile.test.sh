@@ -224,6 +224,36 @@ test_claude_threads_model_and_effort() {
   pass "claude receives --model and --effort profile flags"
 }
 
+# A claude crewmate's worktree settings must suppress the harness's default AI
+# co-author trailer at the tool level, WITHOUT losing the turn-end Stop hook that
+# shares the same file. Both concerns live in one JSON document, so the file has to
+# stay parseable for claude to honor either of them.
+test_claude_worktree_settings_suppress_ai_coauthor() {
+  local rec id out status settings
+  id=profile-claude-coauthor-z17
+  rec=$(make_spawn_case profile-claude-coauthor claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "claude spawn should succeed"
+  settings="$WT_DIR/.claude/settings.local.json"
+  assert_present "$settings" "claude spawn did not write worktree settings"
+  jq -e . "$settings" >/dev/null 2>&1 || fail "claude worktree settings are not parseable JSON"$'\n'"$(cat "$settings")"
+  jq -e '.includeCoAuthoredBy == false' "$settings" >/dev/null 2>&1 \
+    || fail "claude worktree settings must set includeCoAuthoredBy to false"$'\n'"$(cat "$settings")"
+  # The recorded path is realpath-resolved by fm-spawn, so pin the shape and the
+  # task-scoped marker name rather than an unresolved literal prefix.
+  jq -e --arg marker "$id.turn-ended'" \
+    '.hooks.Stop[0].hooks[0] | .type == "command" and (.command | startswith("touch ") and endswith($marker))' \
+    "$settings" >/dev/null 2>&1 \
+    || fail "co-author suppression must not displace the turn-end Stop hook"$'\n'"$(cat "$settings")"
+  assert_grep '.claude/settings.local.json' \
+    "$(git -C "$WT_DIR" rev-parse --git-path info/exclude)" \
+    "claude worktree settings were not excluded from git"
+  pass "claude worktree settings suppress the AI co-author trailer and keep the turn-end hook"
+}
+
 test_codex_threads_model_and_effort() {
   local rec id out status launch
   id=profile-codex-z3
@@ -391,6 +421,7 @@ test_active_dispatch_profile_allows_explicit_harness
 test_active_dispatch_profile_allows_positional_harness
 test_active_dispatch_profile_allows_raw_launch_command
 test_claude_threads_model_and_effort
+test_claude_worktree_settings_suppress_ai_coauthor
 test_codex_threads_model_and_effort
 test_codex_omits_invalid_max_effort
 test_grok_threads_model_and_reasoning_effort
