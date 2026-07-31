@@ -32,7 +32,11 @@
 #                       fast-forward, secondmate liveness, X-mode artifact writes, fleet sync) run only
 #                       when this session actually holds the lock.
 #   3. wake-drain     - mutates the durable wake queue, so it also only runs
-#                       when locked.
+#                       when locked. On that locked path only, and immediately
+#                       before the drain rather than at step 1, this also ends
+#                       the previous session's in-flight-with-no-worker banner
+#                       episode so a persisting gap is loud once per session in
+#                       the digest below (bin/fm-guard.sh owns that banner).
 #   4. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
 #                       always safe, always runs.
@@ -100,6 +104,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 
 STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
@@ -277,12 +283,12 @@ fi
 
 # --- 3. wake-drain -------------------------------------------------------
 # Drained records are this turn's first work queue (AGENTS.md section 8); the
-# drain also runs fm-guard.sh internally on the locked path, so the
-# tangle/watcher-liveness alarms land right here too, ahead of the bulk digest
-# below. The read-only path never touches the queue (another session
-# may be actively draining it) but still runs fm-guard.sh directly with
-# non-mutating advisory text, so the same alarms surface without repair
-# commands.
+# drain also runs fm-guard.sh internally on the locked path, so the tangle,
+# in-flight-with-no-worker, and watcher-liveness alarms land right here too,
+# ahead of the bulk digest below. The read-only path never touches the queue
+# (another session may be actively draining it) but still runs fm-guard.sh
+# directly with non-mutating advisory text, so the same alarms surface without
+# repair commands.
 subsection "WAKE QUEUE"
 if [ "$READ_ONLY" -eq 1 ]; then
   QLEN=0
@@ -291,6 +297,15 @@ if [ "$READ_ONLY" -eq 1 ]; then
   GUARD_OUT=$(FM_GUARD_READ_ONLY=1 "$SCRIPT_DIR/fm-guard.sh" 2>&1)
   [ -n "$GUARD_OUT" ] && printf '%s\n' "$GUARD_OUT"
 else
+  # A locked session earns one full in-flight-with-no-worker banner, and that
+  # alarm never self-clears while the gap persists, so without this reset a
+  # dropped ask would earn one loud banner in its entire lifetime. End the
+  # previous session's episode HERE rather than at the lock step: step 2's
+  # bootstrap fleet sync also runs fm-guard.sh, but with its output discarded, so
+  # an earlier reset would be spent on a banner nobody ever reads. The drain below
+  # is the first guard call whose output lands in this digest. A read-only session
+  # must leave the marker alone, exactly as it leaves the stale-watcher marker.
+  fm_supervision_reset_undispatched_episode "$STATE"
   DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"

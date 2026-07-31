@@ -137,6 +137,8 @@ validated registered-home handoff. It is local-only, skips nested secondmate
 aggregation, and marks missing or unstructured current backlog state invalid.
 Active tasks-axi captain holds appear as decisions_open and stay visible in
 queued with hold_reason and hold_kind for downstream projections.
+An in-flight row with no child metadata invalidates the summary only when it
+carries no active hold, since a parked row legitimately outlives its worker.
 Cross-home reads use FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the count
 bound), FM_SNAPSHOT_SECONDMATE_TIMEOUT, and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Terminal contradiction evidence uses
@@ -533,10 +535,26 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
     --argjson decisions_n "$FM_SNAPSHOT_SECONDMATE_DECISIONS" \
     --argjson landed_n "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" \
     --argjson backlog "$1" \
+    --arg today "$(date +%Y-%m-%d)" \
     --argjson tasks "$2" '
     def trunc($n):
       tostring | gsub("\\s+"; " ")
       | if length > $n then .[:$n] + "…" else . end;
+    # Same ACTIVE-hold test bin/fm-supervision-lib.sh applies: a non-whitespace
+    # "hold:" reason plus either no "hold-until:" date or a date still in the
+    # future, because tasks-axi treats a gate dated today or earlier as
+    # dispatchable again. The gate is read off the preserved raw row rather than
+    # captured by the row parser, so no other projection changes shape.
+    # The optional capture is materialized into an array first so a row with no
+    # gate yields null rather than an empty stream: this emits exactly one
+    # boolean for every row, so it stays correct in a positive position such as
+    # select(hold_active) instead of only where an empty stream happens to drop
+    # the row too.
+    def hold_active:
+      ([ (.raw // "") | capture("hold-until:[[:space:]]*(?<v>[0-9]{4}-[0-9]{2}-[0-9]{2})")? ]
+       | (.[0].v // null)) as $until
+      | (((.hold_reason // "") | tostring | test("[^[:space:]]"))
+         and ($until == null or $until > $today));
     ([ $backlog.records[]?
        | select((.state == "in_flight" or .state == "queued") and (.structured | not)) ]) as $unstructured_current
     | ([ $backlog.records[]? | select(.state == "in_flight" and .structured) ]) as $owned_in_flight
@@ -552,7 +570,12 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
             local_note:((.local_note // null) | if . == null then null else trunc(120) end),completion} ]
        | sort_by([(.completion.date // ""), .id]) | reverse) as $landed_all
     | ([ $tasks[] | select(.current_state.state == "unknown") ]) as $unknown_children
-    | ([ $owned_in_flight[] | select(.id as $id | [$tasks[].id] | index($id) | not) ]) as $orphan_in_flight
+    # An actively held in-flight row legitimately outlives its worker, so it is
+    # not a reason to distrust this whole summary; a genuinely orphaned unheld row
+    # still invalidates it.
+    | ([ $owned_in_flight[]
+         | select(hold_active | not)
+         | select(.id as $id | [$tasks[].id] | index($id) | not) ]) as $orphan_in_flight
     | ([ $tasks[]
          | select(.current_state.state == "working"
                   or .current_state.state == "parked"

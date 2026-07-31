@@ -1,7 +1,6 @@
 ---
 name: spec-linear
-description: Spec out Linear projects/issues through collaborative Q&A
-disable-model-invocation: true
+description: Spec out a Linear project or issue through a collaborative question-and-answer flow, with draft review before syncing to Linear. Use before creating or substantially rewriting a Linear issue or project spec, whether the user invokes it or the request itself calls for that deliverable. This flow is interactive and needs the user present to answer questions and approve the draft, so do not enter it to satisfy some other task's side need.
 user-invocable: true
 metadata:
   internal: true
@@ -10,6 +9,19 @@ metadata:
 # Linear Spec Generator
 
 Collaboratively spec out Linear projects or issues through a structured question-and-answer flow with draft review before syncing.
+
+## When to load this skill
+
+Load it before creating or substantially rewriting a Linear issue or project spec.
+Either path reaches the same flow: the user invokes it directly, or a request whose deliverable is a Linear spec makes it the right tool.
+
+This flow is interactive by design and cannot be completed alone.
+It asks the user clarifying questions, and Step 7 stops for explicit approval of the draft before anything reaches Linear.
+So load it only when producing that spec IS the current request.
+Do not load it to satisfy some other task's side need, and do not start interrogating the user about a spec they did not ask for.
+
+If you reached this skill without the user present to answer questions and approve the draft, stop and say so rather than syncing anything to Linear.
+The user-approval steps below are the safeguard against overwriting the user's own tickets, and they are never skipped, abbreviated, or self-answered because the flow was model-invoked rather than user-invoked.
 
 ## Input: `$ARGUMENTS`
 
@@ -245,6 +257,7 @@ I won't create anything in Linear until you confirm.
 ```
 
 **Wait for explicit confirmation** before proceeding.
+Only the user's own answer clears this checkpoint; your judgement never substitutes for it, however the skill was invoked.
 
 ### Step 8: Final Duplicate Re-check
 
@@ -326,6 +339,7 @@ NO implementation details unless the user explicitly provides them.
 2. **Always review before sync**: Never create anything in Linear without showing a draft first.
 
 3. **Don't modify existing items**: Alert the user if similar items exist and get explicit confirmation before any updates.
+Never modify an existing spec without that confirmation, whoever or whatever invoked this skill.
 
 4. **Minimize questions**: Group questions logically and only ask what's necessary.
 

@@ -13,6 +13,7 @@ HARNESS="$ROOT/.agents/skills/harness-adapters/SKILL.md"
 CODING="$ROOT/.agents/skills/firstmate-coding-guidelines/SKILL.md"
 RECOVERY="$ROOT/.agents/skills/stuck-crewmate-recovery/SKILL.md"
 SECONDMATE="$ROOT/.agents/skills/secondmate-provisioning/SKILL.md"
+SPEC="$ROOT/.agents/skills/spec-linear/SKILL.md"
 CONFIG="$ROOT/docs/configuration.md"
 AGENTS="$ROOT/AGENTS.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
@@ -221,7 +222,84 @@ test_compressed_agents_retains_authority_and_supervision_safety() {
   pass "compressed AGENTS.md retains authority, supervision, AFK, and X safety"
 }
 
+# spec-linear stays captain-invocable, so its trigger cannot live in section 13
+# (declared agent-only), and it no longer blocks model invocation, so its
+# interactive safeguards have to survive the model-invoked path.
+test_spec_linear_is_model_invocable_with_a_declared_trigger() {
+  assert_no_grep 'disable-model-invocation' "$SPEC" \
+    "spec-linear is still blocked from model invocation"
+  assert_grep 'user-invocable: true' "$SPEC" \
+    "spec-linear must stay captain-invocable"
+  assert_grep 'Use before creating or substantially rewriting a Linear issue or project spec' "$SPEC" \
+    "spec-linear metadata lost the trigger a model matches on"
+  assert_grep 'Load `spec-linear` before creating or substantially rewriting a Linear issue or project spec' "$AGENTS" \
+    "AGENTS.md lost the spec-linear load trigger"
+  assert_grep 'firstmate runs this one itself because the flow needs the captain'"'"'s live participation' "$AGENTS" \
+    "AGENTS.md must say why this planning deliverable is not delegated to a crewmate"
+  assert_no_grep '`spec-linear` - load' "$AGENTS" \
+    "spec-linear must not be listed among the agent-only reference skills"
+  for phrase in \
+    'do not enter it to satisfy some other task' \
+    'stop and say so rather than syncing anything to Linear' \
+    'Only the user'"'"'s own answer clears this checkpoint' \
+    'Never modify an existing spec without that confirmation'; do
+    assert_grep "$phrase" "$SPEC" "spec-linear lost an interactive safeguard: '$phrase'"
+  done
+  pass "spec-linear is model-invocable with a declared trigger and intact safeguards"
+}
+
+# The captain sends asks mid-turn, so the durable half of not dropping them is a
+# capture rule firstmate reads at intake plus the deterministic guard check.
+test_captain_ask_capture_rule_is_stated_at_intake() {
+  local intake backlog_contract
+  intake=$(awk '
+    /^### Intake and authority$/ { found = 1; next }
+    found && /^### / { exit }
+    found { print }
+  ' "$AGENTS")
+  assert_contains "$intake" 'Record every captain ask in the backlog as it arrives, before acting on it' \
+    "AGENTS.md intake lost the record-before-acting rule"
+  assert_contains "$intake" 'A later ask adds work and never supersedes an earlier one unless the captain says so.' \
+    "AGENTS.md intake lost the later-ask-does-not-supersede rule"
+  assert_grep 'Never tell the captain work is dispatched before that confirmation.' "$AGENTS" \
+    "AGENTS.md lost the confirm-before-claiming-dispatch rule"
+
+  # Capturing every ask immediately only stays compatible with the
+  # in-flight-with-no-worker alarm while firstmate refuses to record a row as
+  # started without a worker, so the backlog contract owns that rule and section
+  # 7 must not restate it. The rule constrains what firstmate RECORDS, because a
+  # deliberately parked row legitimately keeps its in-flight row after teardown -
+  # the very case the alarm's hold exclusion protects.
+  backlog_contract=$(awk '
+    /^## 10\. Backlog contract$/ { found = 1; next }
+    found && /^## / { exit }
+    found { print }
+  ' "$AGENTS")
+  assert_contains "$backlog_contract" 'Firstmate never records an item as In flight without a live worker for it' \
+    "AGENTS.md section 10 lost the never-record-In-flight-without-a-worker rule"
+  assert_not_contains "$backlog_contract" 'An item is In flight only while a live worker exists for it' \
+    "section 10 still asserts the absolute In-flight invariant, which contradicts the alarm's hold exclusion"
+  assert_not_contains "$intake" 'Firstmate never records an item as In flight without a live worker for it' \
+    "the In-flight recording rule has one owner in section 10 and must not be restated at intake"
+  # Self-run work must be excluded from BOTH the dispatch sweep and the
+  # undispatched alarm, which any active hold already does; the reason has to say
+  # firstmate is working it so the row does not read as the captain's gate. The
+  # kind is parked rather than captain because the decision surfaces and the
+  # decision-hold gates key on the captain kind.
+  assert_contains "$backlog_contract" 'is recorded as a `parked` hold whose reason states that firstmate is working the row itself and is not awaiting a captain decision' \
+    "AGENTS.md section 10 lost the parked-hold routing for work firstmate performs itself"
+  assert_contains "$backlog_contract" 'the `captain` hold kind below is the shape the decision surfaces and gates key on and stays reserved for decisions the captain actually owes' \
+    "AGENTS.md section 10 lost the parked-versus-captain hold-kind distinction"
+  assert_not_contains "$backlog_contract" 'is recorded as a captain-kind hold' \
+    "section 10 still routes firstmate-run work to a captain-kind hold, which the decision surfaces read as a captain gate"
+  assert_not_contains "$backlog_contract" 'stays Queued until a worker exists' \
+    "section 10 still routes firstmate-run work to plain Queued, where the dispatch sweep can spawn it"
+  pass "AGENTS.md states the captain-ask capture rule and the In-flight recording rule"
+}
+
 test_new_skill_metadata_and_triggers
+test_spec_linear_is_model_invocable_with_a_declared_trigger
+test_captain_ask_capture_rule_is_stated_at_intake
 test_diagnostic_owner_covers_causal_procedure
 test_project_management_owner_covers_guarded_operations
 test_generic_effort_fallback_respects_precedence
