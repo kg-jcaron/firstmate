@@ -4,6 +4,10 @@
 # clear volatile state, refresh/prune the project's clone for PR-based ship
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
+# Clearing the worker metadata of a work item also records a self-clearing,
+# expiring completion-pending marker for it, so the claimed-but-never-dispatched
+# guard stays quiet for the window between this cleanup and the row's filing
+# (bin/fm-supervision-lib.sh owns that marker; a secondmate has no row to file).
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so

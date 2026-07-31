@@ -26,16 +26,17 @@
 # was bootstrap-then-lock):
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
-#                       mutating step runs. On the locked path only, this also
-#                       ends the previous session's in-flight-with-no-worker
-#                       banner episode so a persisting gap is loud once per
-#                       session (bin/fm-guard.sh owns that banner).
+#                       mutating step runs.
 #   2. bootstrap      - detect-only diagnostics always run. The five
 #                       MUTATING sweeps (legacy PR-check migration, secondmate
 #                       fast-forward, secondmate liveness, X-mode artifact writes, fleet sync) run only
 #                       when this session actually holds the lock.
 #   3. wake-drain     - mutates the durable wake queue, so it also only runs
-#                       when locked.
+#                       when locked. On that locked path only, and immediately
+#                       before the drain rather than at step 1, this also ends
+#                       the previous session's in-flight-with-no-worker banner
+#                       episode so a persisting gap is loud once per session in
+#                       the digest below (bin/fm-guard.sh owns that banner).
 #   4. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
 #                       always safe, always runs.
@@ -282,12 +283,12 @@ fi
 
 # --- 3. wake-drain -------------------------------------------------------
 # Drained records are this turn's first work queue (AGENTS.md section 8); the
-# drain also runs fm-guard.sh internally on the locked path, so the
-# tangle/watcher-liveness alarms land right here too, ahead of the bulk digest
-# below. The read-only path never touches the queue (another session
-# may be actively draining it) but still runs fm-guard.sh directly with
-# non-mutating advisory text, so the same alarms surface without repair
-# commands.
+# drain also runs fm-guard.sh internally on the locked path, so the tangle,
+# in-flight-with-no-worker, and watcher-liveness alarms land right here too,
+# ahead of the bulk digest below. The read-only path never touches the queue
+# (another session may be actively draining it) but still runs fm-guard.sh
+# directly with non-mutating advisory text, so the same alarms surface without
+# repair commands.
 subsection "WAKE QUEUE"
 if [ "$READ_ONLY" -eq 1 ]; then
   QLEN=0
