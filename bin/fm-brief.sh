@@ -427,7 +427,7 @@ if [ "$PROMOTE" -eq 1 ]; then
   SETUP2_PROMOTE=""
   [ -n "$NM_INIT_LINE" ] && SETUP2_PROMOTE="
 4. $NM_INIT_LINE"
-  SETUP_SECTION=$(cat <<EOF
+  IFS= read -r -d '' SETUP_SECTION <<EOF || true
 # Setup - promotion from scout to ship
 You investigated this task as a scout and keep this same worktree with its loaded context; it now holds scratch state from that investigation (experiments, debug edits, throwaway commits).
 This task now ships a change through the delivery flow below, so first turn that scratch worktree into a clean ship base.
@@ -439,9 +439,9 @@ If the top-level path is the primary checkout or not the worktree you were launc
 2. Return to a clean base off the current default branch, carrying over ONLY the intended fix changes. Scratch commits, debug edits, and throwaway experiments must NOT ride along, and a bug you reproduced while scouting becomes the regression test for this fix.
 3. Once the base is clean, create your ship branch: \`git checkout -b fm/$ID\`.$SETUP2_PROMOTE
 EOF
-)
+  SETUP_SECTION=${SETUP_SECTION%$'\n'}
 else
-  SETUP_SECTION=$(cat <<EOF
+  IFS= read -r -d '' SETUP_SECTION <<EOF || true
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 
@@ -451,7 +451,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 EOF
-)
+  SETUP_SECTION=${SETUP_SECTION%$'\n'}
 fi
 
 # Task section. A fresh ship dispatch keeps the {TASK} placeholder for firstmate

@@ -290,7 +290,10 @@ assert_rule_cross_references_resolve() {
   done
   n=$(grep -oE 'escalate to firstmate \(rule [0-9]+\)' "$brief" | grep -oE '[0-9]+' | head -1)
   if [ -n "$n" ]; then
-    printf '%s\n' "$block" | grep -qE "^$n\. If a decision belongs to a human" \
+    # The ship and scout blocks word this rule's owner differently ("belongs to a
+    # human" vs "belongs above the implementation worker"), so match the rule by
+    # what it does - open a needs-decision - rather than by either phrasing.
+    printf '%s\n' "$block" | grep -qE "^$n\. If a decision belongs" \
       || fail "$label: 'escalate to firstmate (rule $n)' does not point at the needs-decision rule"$'\n'"--- rules ---"$'\n'"$block"
   fi
 }
