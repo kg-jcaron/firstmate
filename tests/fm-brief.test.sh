@@ -66,6 +66,8 @@ test_ship_modes_generate_clean_briefs() {
     assert_present "$brief" "$id: brief was not scaffolded"
     assert_grep "# Definition of done" "$brief" "$id: brief missing Definition of done section"
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
+    assert_grep "Never add a co-author trailer naming an AI model or assistant" "$brief" \
+      "$id: brief missing the AI co-author trailer ban"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -115,6 +117,64 @@ test_no_mistakes_dod_wording() {
   assert_no_grep "no-mistakes' own guidance" "$brief" \
     "no-mistakes DOD regressed to the apostrophe form that breaks bash -n"
   pass "fm-brief.sh: no-mistakes DOD wording avoids the apostrophe regression"
+}
+
+# Print the numbered Rules block of a generated brief: everything between the
+# `# Rules` heading and the next `# ` heading. The Setup block is numbered too, so
+# a rule cross-reference must resolve inside this range and nowhere else.
+rules_block() {
+  awk '/^# Rules$/{inside=1; next} inside && /^# /{exit} inside' "$1"
+}
+
+# Every `(rule N)` cross-reference in a generated brief must resolve to a real
+# numbered rule, and the one pointing at needs-decision escalation must land on the
+# decision-belongs-to-a-human rule specifically. The Rules blocks are hand-numbered
+# and duplicated across the scout and ship heredocs, so inserting a rule silently
+# misdirects crewmates unless the correspondence is pinned.
+assert_rule_cross_references_resolve() {
+  local brief=$1 label=$2 block refs n
+  block=$(rules_block "$brief")
+  [ -n "$block" ] || fail "$label: brief has no numbered Rules block"
+  refs=$(grep -oE '\(rule [0-9]+\)' "$brief" | grep -oE '[0-9]+' | sort -u)
+  [ -n "$refs" ] || return 0
+  for n in $refs; do
+    printf '%s\n' "$block" | grep -qE "^$n\. " \
+      || fail "$label: brief cites (rule $n) but its Rules block has no rule $n"$'\n'"--- rules ---"$'\n'"$block"
+  done
+  n=$(grep -oE 'escalate to firstmate \(rule [0-9]+\)' "$brief" | grep -oE '[0-9]+' | head -1)
+  if [ -n "$n" ]; then
+    printf '%s\n' "$block" | grep -qE "^$n\. If a decision belongs to a human" \
+      || fail "$label: 'escalate to firstmate (rule $n)' does not point at the needs-decision rule"$'\n'"--- rules ---"$'\n'"$block"
+  fi
+}
+
+test_rule_cross_references_stay_pinned_to_their_rule() {
+  local home id
+  home="$TMP_ROOT/rule-xref-home"
+  mkdir -p "$home/data"
+
+  id="brief-xref-nomistakes-r1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1 \
+    || fail "no-mistakes ship brief scaffold exited non-zero"
+  assert_grep "escalate to firstmate (rule" "$home/data/$id/brief.md" \
+    "no-mistakes ship brief lost its needs-decision cross-reference"
+  assert_rule_cross_references_resolve "$home/data/$id/brief.md" "no-mistakes ship"
+
+  id="brief-xref-scout-r2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1 \
+    || fail "scout brief scaffold exited non-zero"
+  assert_rule_cross_references_resolve "$home/data/$id/brief.md" "scout"
+
+  id="brief-xref-promote-r3"
+  mkdir -p "$home/data/$id"
+  printf 'original scout brief\n' > "$home/data/$id/brief.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --promote >/dev/null 2>&1 \
+    || fail "--promote scaffold exited non-zero"
+  assert_grep "escalate to firstmate (rule" "$home/data/$id/promote.md" \
+    "--promote brief lost its needs-decision cross-reference"
+  assert_rule_cross_references_resolve "$home/data/$id/promote.md" "promote"
+
+  pass "fm-brief.sh: every (rule N) cross-reference resolves to its intended rule"
 }
 
 test_ship_project_memory_wording() {
@@ -447,6 +507,8 @@ EOF
     "--promote brief left an unsubstituted {TASK} placeholder"
   assert_grep "recorded in $home/data/$id/brief.md and $home/data/$id/report.md" "$brief" \
     "--promote brief lost the self-contained pointer to the scout's brief.md and report.md"
+  assert_grep "Never add a co-author trailer naming an AI model or assistant" "$brief" \
+    "--promote brief missing the AI co-author trailer ban"
   pass "fm-brief.sh: --promote writes promote.md with promotion Setup and custom-flow injection"
 }
 
@@ -488,6 +550,8 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "scout brief was not scaffolded"
   assert_grep "SCOUT task" "$brief" "scout brief must declare itself a scout task"
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
+  assert_grep "Never add a co-author trailer naming an AI model or assistant" "$brief" \
+    "scout brief missing the AI co-author trailer ban"
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-sm-q6 --secondmate alpha >/dev/null 2>&1 \
@@ -504,6 +568,7 @@ test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_rule_cross_references_stay_pinned_to_their_rule
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

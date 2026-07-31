@@ -76,6 +76,8 @@
 # Per-harness turn-end hooks are installed automatically; some live outside the worktree.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
+# A claude crewmate's gitignored worktree settings also set includeCoAuthoredBy=false,
+# so the harness default cannot stamp an AI co-author trailer on a project commit.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
@@ -889,8 +891,12 @@ if [ "$KIND" != secondmate ]; then
   case "$HARNESS" in
     claude*)
       mkdir -p "$WT/.claude"
+      # includeCoAuthoredBy rides along in the same file: claude's default stamps a
+      # Co-Authored-By trailer naming the model on every commit, which AGENTS.md
+      # forbids. The generated brief also bans it, but this suppresses it at the
+      # tool level so compliance is mechanical rather than instruction-only.
       cat > "$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"touch '$TURNEND'"}]}]}}
+{"includeCoAuthoredBy":false,"hooks":{"Stop":[{"hooks":[{"type":"command","command":"touch '$TURNEND'"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
       ;;
