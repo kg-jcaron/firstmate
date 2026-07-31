@@ -449,6 +449,8 @@ EOF
     "--promote brief left an unsubstituted {TASK} placeholder"
   assert_grep "recorded in $home/data/$id/brief.md and $home/data/$id/report.md" "$brief" \
     "--promote brief lost the self-contained pointer to the scout's brief.md and report.md"
+  assert_grep "Never add a co-author trailer naming an AI model or assistant" "$brief" \
+    "--promote brief missing the AI co-author trailer ban"
   pass "fm-brief.sh: --promote writes promote.md with promotion Setup and custom-flow injection"
 }
 
@@ -490,6 +492,8 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "scout brief was not scaffolded"
   assert_grep "SCOUT task" "$brief" "scout brief must declare itself a scout task"
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
+  assert_grep "Never add a co-author trailer naming an AI model or assistant" "$brief" \
+    "scout brief missing the AI co-author trailer ban"
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-sm-q6 --secondmate alpha >/dev/null 2>&1 \
