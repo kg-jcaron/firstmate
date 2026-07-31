@@ -50,6 +50,8 @@
 # supersedes the generic delivery-mode instructions, so the crewmate follows the
 # custom flow regardless of how the dispatching session started. A project with
 # no note scaffolds exactly as before.
+# Ship and scout briefs both forbid a co-author trailer naming an AI model or
+# assistant on any commit, while human co-author trailers stay allowed.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
