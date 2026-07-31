@@ -123,10 +123,11 @@ test_guard_warnings() {
   # (1) watcher down (no beacon) + two in-flight tasks + a queued wake.
   # FM_ROOT_OVERRIDE points the worktree-tangle check at a non-git dir so it stays
   # inert here; this case is about the watcher-down banner, not the tangle guard.
+  # Pin Claude so the host test runner's harness ancestry cannot change this fixture.
   printf 'project=x\n' > "$state/task.meta"
   printf 'project=y\n' > "$state/task2.meta"
   append_wake "$state" heartbeat heartbeat heartbeat || fail "guard heartbeat append failed"
-  FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
   first=$(grep -v '^[[:space:]]*$' "$err" | head -1)
   case "$first" in
     '●'*) ;;
@@ -152,7 +153,7 @@ test_guard_warnings() {
   mkdir -p "$dir/config"
   printf 'project=x\n' > "$state/task.meta"
   : > "$dir/config/x-mode.env"
-  FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
   grep -F "source '$dir/config/x-mode.env' first" "$err" >/dev/null || fail "guard repair line did not source the X-mode cadence config"
 
   # (2) fresh watcher, empty queue -> silence.
@@ -481,12 +482,18 @@ test_watcher_self_evicts_on_lock_takeover() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   i=0
-  while [ "$i" -lt 50 ]; do
-    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] && break
+  while [ "$i" -lt 80 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+      && [ -s "$state/.watch.lock/pid-identity" ] \
+      && [ -e "$state/.last-watcher-beat" ] \
+      && break
     sleep 0.1
     i=$((i + 1))
   done
-  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] || fail "watcher did not record its own pid in the lock"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+    && [ -s "$state/.watch.lock/pid-identity" ] \
+    && [ -e "$state/.last-watcher-beat" ] \
+    || fail "watcher did not finish publishing its lock ownership"
   # Simulate a second watcher taking over the singleton lock. $$ (the test
   # runner) is a live pid that is not the watcher.
   printf '%s\n' "$$" > "$state/.watch.lock/pid"
@@ -887,30 +894,127 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
 }
 
 test_pid_identity_is_locale_invariant() {
-  # The watcher records its process identity under one locale; arm/guard/turn-end
-  # re-read it under the machine's ambient locale. ps's lstart date format follows
-  # LC_TIME, so an unpinned read on a non-C locale (e.g. ko_KR) would differ only
-  # in the date portion and reject a genuinely live watcher. The fix pins LC_ALL=C
-  # inside fm_pid_identity, so its output must be byte-identical regardless of the
-  # caller's exported LC_ALL/LC_TIME. That invariant holds on any host because the
-  # pin is internal, so this stays deterministic on CI even where an alternate
+  # The portable fallback records its process identity under one locale, then
+  # arm/guard/turn-end re-read it under the machine's ambient locale. ps's lstart
+  # date format follows LC_TIME, so an unpinned read on a non-C locale (e.g. ko_KR)
+  # would reject a genuinely live watcher. The fallback pins LC_ALL=C inside
+  # fm_pid_identity, so its output must be byte-identical regardless of the caller's
+  # exported LC_ALL/LC_TIME. This stays deterministic on CI even where an alternate
   # locale like ko_KR.UTF-8 is not installed (the equality then holds trivially).
-  local live baseline via_lc_all via_lc_time
+  local live no_proc fakebin locale_log baseline via_lc_all via_lc_time
+  local real_first real_second observed
   sleep 300 &
   live=$!
-  baseline=$(LC_ALL=C bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
-  via_lc_all=$(LC_ALL=ko_KR.UTF-8 bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
-  via_lc_time=$(LC_TIME=ko_KR.UTF-8 bash -c 'unset LC_ALL; . "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
+  no_proc="$TMP_ROOT/no-proc"
+  fakebin="$TMP_ROOT/locale-ps"
+  locale_log="$TMP_ROOT/locale-ps.observed"
+  mkdir -p "$fakebin"
+  : > "$locale_log"
+  # The stub renders lstart through date under whatever locale it inherits, so its
+  # output really does change when the caller's locale leaks through. Dropping the
+  # LC_ALL=C pin in fm_pid_identity therefore breaks the equality assertions below
+  # on any host with a second locale installed, and the recorded LC_ALL below keeps
+  # the pin asserted even where ko_KR.UTF-8 is missing and date falls back to C.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${LC_ALL-<unset>}" >> "$FAKE_PS_LOCALE_LOG"
+stamp=$(date -d @1784094040 '+%a %b %e %H:%M:%S %Y' 2>/dev/null) \
+  || stamp=$(date -r 1784094040 '+%a %b %e %H:%M:%S %Y' 2>/dev/null) \
+  || stamp='Mon Jul 28 20:00:00 2026'
+printf '%s sleep 300\n' "$stamp"
+SH
+  chmod +x "$fakebin/ps"
+  baseline=$(PATH="$fakebin:$PATH" FAKE_PS_LOCALE_LOG="$locale_log" FM_PROC_ROOT_OVERRIDE="$no_proc" LC_ALL=C bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
+  via_lc_all=$(PATH="$fakebin:$PATH" FAKE_PS_LOCALE_LOG="$locale_log" FM_PROC_ROOT_OVERRIDE="$no_proc" LC_ALL=ko_KR.UTF-8 bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
+  via_lc_time=$(PATH="$fakebin:$PATH" FAKE_PS_LOCALE_LOG="$locale_log" FM_PROC_ROOT_OVERRIDE="$no_proc" LC_TIME=ko_KR.UTF-8 bash -c 'unset LC_ALL; . "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
+  # Keep the real ps fallback exercised wherever it supports the portable -o fields.
+  real_first=
+  real_second=
+  if LC_ALL=C ps -p "$live" -o lstart= -o command= >/dev/null 2>&1; then
+    real_first=$(FM_PROC_ROOT_OVERRIDE="$no_proc" LC_ALL=C bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
+    real_second=$(FM_PROC_ROOT_OVERRIDE="$no_proc" LC_TIME=ko_KR.UTF-8 bash -c 'unset LC_ALL; . "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
+  fi
   kill "$live" 2>/dev/null || true
   wait "$live" 2>/dev/null || true
   [ -n "$baseline" ] || fail "fm_pid_identity produced no baseline identity under LC_ALL=C"
   [ "$via_lc_all" = "$baseline" ] || fail "fm_pid_identity varied with exported LC_ALL (got '$via_lc_all', want '$baseline')"
   [ "$via_lc_time" = "$baseline" ] || fail "fm_pid_identity varied with exported LC_TIME (got '$via_lc_time', want '$baseline')"
+  while read -r observed; do
+    [ "$observed" = C ] || fail "fm_pid_identity invoked ps without pinning LC_ALL=C (saw '$observed')"
+  done < "$locale_log"
+  if [ -n "$real_first" ]; then
+    [ "$real_second" = "$real_first" ] \
+      || fail "real ps fallback varied with exported LC_TIME (got '$real_second', want '$real_first')"
+    pass "fm_pid_identity real ps fallback is locale-invariant"
+  else
+    pass "real ps fallback locale check skipped where ps -o lstart= is unsupported"
+  fi
   pass "fm_pid_identity is locale-invariant across LC_ALL/LC_TIME"
+}
+
+write_fake_proc_identity() {
+  local proc_root=$1 pid=$2 starttime=$3
+  mkdir -p "$proc_root/$pid"
+  printf '%s\n' "$pid (watcher ) with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 $starttime 20 21 22" > "$proc_root/$pid/stat"
+  printf 'bash\0/path with spaces/fm-watch.sh\0--flag\0' > "$proc_root/$pid/cmdline"
+}
+
+test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse() {
+  local dir state proc_root pid identity_key before after_time_jump after_pid_reuse
+  dir=$(make_case proc-pid-identity)
+  state="$dir/state"
+  proc_root="$dir/proc"
+  pid=4242
+  identity_key=proc-starttime
+  [ "$(uname)" != Linux ] || identity_key=linux-starttime
+  mkdir -p "$proc_root"
+  printf 'btime 1784094040\n' > "$proc_root/stat"
+  write_fake_proc_identity "$proc_root" "$pid" 987654
+
+  before=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") \
+    || fail "could not read initial fake Linux process identity"
+  printf 'btime 1784094016\n' > "$proc_root/stat"
+  after_time_jump=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") \
+    || fail "could not re-read fake Linux process identity after btime change"
+
+  [ "$after_time_jump" = "$before" ] \
+    || fail "/proc process identity changed with btime (before '$before', after '$after_time_jump')"
+  [ "$before" = "$identity_key=987654 cmdline-hex=62617368002f706174682077697468207370616365732f666d2d77617463682e7368002d2d666c616700" ] \
+    || fail "/proc process identity did not combine parsed starttime field 22 with the full cmdline ('$before')"
+  pass "/proc process identity ignores simulated btime changes"
+
+  write_fake_proc_identity "$proc_root" "$pid" 987655
+  after_pid_reuse=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") \
+    || fail "could not read reused fake /proc pid identity"
+  [ "$after_pid_reuse" != "$before" ] || fail "/proc process identity missed changed starttime for reused pid"
+  pass "/proc process identity detects pid reuse"
+}
+
+test_msys_pid_identity_uses_proc() {
+  local live identity
+  case "$(uname)" in
+    MSYS*|MINGW*|CYGWIN*) ;;
+    *)
+      pass "MSYS /proc process identity regression skipped on non-Windows host"
+      return
+      ;;
+  esac
+  sleep 300 &
+  live=$!
+  identity=$(bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  case "$identity" in
+    proc-starttime=*" cmdline-hex="*) ;;
+    *) fail "MSYS process identity did not use compatible /proc fields ('$identity')" ;;
+  esac
+  pass "MSYS process identity uses compatible /proc fields"
 }
 
 test_singleton_start
 test_pid_identity_is_locale_invariant
+test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
+test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
