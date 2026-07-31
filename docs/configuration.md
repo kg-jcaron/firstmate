@@ -137,7 +137,7 @@ Fleet-local operational facts and gotchas live locally in `data/learnings.md`; i
 The file is created lazily on first learning and follows the same dated, evidence-backed, curated style as `data/captain.md`: inspect the current file first, then rewrite or prune stale entries instead of appending forever.
 There is no shared learnings file by captain decision.
 
-## Project delivery-workflow notes (data/project-flows/<name>.md)
+## Project delivery-workflow notes (data/project-flows/NAME.md)
 
 A project whose delivery differs from firstmate's default no-mistakes-to-PR pipeline (for example a mandatory local dev-server visual preview, a draft-PR-first step, or a stage-branch merge) records that custom workflow in a fleet-private note at `data/project-flows/<project-name>.md`, keyed by the bare project name.
 This directory sits under the wholesale-gitignored `data/`, so the shared template carries only the mechanism, never the list of which projects have custom flows; the existence of a non-empty note is itself the marker that a project is custom-flow.

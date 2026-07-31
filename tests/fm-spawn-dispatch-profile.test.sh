@@ -395,9 +395,11 @@ test_claude_worktree_settings_suppress_ai_coauthor() {
   jq -e '.includeCoAuthoredBy == false' "$settings" >/dev/null 2>&1 \
     || fail "claude worktree settings must set includeCoAuthoredBy to false"$'\n'"$(cat "$settings")"
   # The recorded path is realpath-resolved by fm-spawn, so pin the shape and the
-  # task-scoped marker name rather than an unresolved literal prefix.
+  # task-scoped marker name rather than an unresolved literal prefix. The Stop
+  # command also carries the semantic idle lifecycle event after the touch, so
+  # the marker is matched anywhere in the command rather than at its end.
   jq -e --arg marker "$id.turn-ended'" \
-    '.hooks.Stop[0].hooks[0] | .type == "command" and (.command | startswith("touch ") and endswith($marker))' \
+    '.hooks.Stop[0].hooks[0] | .type == "command" and (.command | startswith("touch ") and contains($marker))' \
     "$settings" >/dev/null 2>&1 \
     || fail "co-author suppression must not displace the turn-end Stop hook"$'\n'"$(cat "$settings")"
   assert_grep '.claude/settings.local.json' \

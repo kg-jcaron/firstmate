@@ -57,7 +57,7 @@ Try a few variations if the first search is too narrow.
 
 I found existing items that might already cover this:
 
-- **[Issue/Project Title]** ([ISSUE-KEY](url)) - [brief description of what it covers]
+- **[Issue/Project Title]** ([ISSUE-KEY](https://linear.app/...)) - [brief description of what it covers]
 
 Would you like to:
 1. **Update the existing item** - I'll help you discuss and apply changes to it
@@ -275,7 +275,7 @@ Re-run the same searches from Step 2 to catch any items that may have been creat
 
 Since we started drafting, these new items appeared in Linear:
 
-- **[Issue/Project Title]** ([ISSUE-KEY](url)) - [brief description]
+- **[Issue/Project Title]** ([ISSUE-KEY](https://linear.app/...)) - [brief description]
 
 Would you like to:
 1. Proceed with creating new items anyway
@@ -318,13 +318,13 @@ After syncing, provide a summary:
 ## Synced to Linear
 
 ### Project Created
-- **[Project Name](Linear URL)** - Status: [Status], Priority: [Priority]
+- **[Project Name](https://linear.app/...)** - Status: [Status], Priority: [Priority]
 
 ### Issues Created
 | Issue | Type | Priority | Status | Link |
 |-------|------|----------|--------|------|
-| [Title] | Feature | High | [Default workflow state] | [ISSUE-KEY](url) |
-| [Title] | Bug | Urgent | [Default workflow state] | [ISSUE-KEY](url) |
+| [Title] | Feature | High | [Default workflow state] | [ISSUE-KEY](https://linear.app/...) |
+| [Title] | Bug | Urgent | [Default workflow state] | [ISSUE-KEY](https://linear.app/...) |
 
 All items have been created in the **[Target team]** team.
 ```
