@@ -53,11 +53,13 @@
 # completion instruction elsewhere in the brief, because rule 1 stays
 # mode-derived. The note's own headings are demoted one level as it is injected,
 # so the note nests inside that section instead of closing it and the completion
-# gate stays under the heading rule 5 names. In no-mistakes mode both variants
-# also carry the same pipeline-ownership rules (drive an active run through its
-# gates, never hand-edit or abort it, never pass --yes) plus the instruction to
-# run the pipeline, which constrain how a run is driven rather than when the task
-# is done. A project with no note carries only the generic delivery-mode
+# gate stays under the heading rule 5 names. In no-mistakes mode the injected
+# section also carries the pipeline-ownership rules (drive an active run through
+# its gates, never hand-edit or abort it, never pass --yes), which constrain how
+# a run is driven rather than when the task is done. It never tells the crewmate
+# to start a run: those rules bind only where a step of the note's own workflow
+# runs the pipeline, so a flow that includes a pipeline run must name that step
+# itself. A project with no note carries only the generic delivery-mode
 # Definition of done.
 # Ship and scout briefs both forbid a co-author trailer naming an AI model or
 # assistant on any commit, while human co-author trailers stay allowed.
