@@ -51,11 +51,14 @@
 # regardless of how the dispatching session started. That injected section states
 # that it wins over any conflicting delivery-mode, branch, push, PR, or
 # completion instruction elsewhere in the brief, because rule 1 stays
-# mode-derived. In no-mistakes mode both variants also carry the same
-# pipeline-ownership rules (drive an active run through its gates, never
-# hand-edit or abort it, never pass --yes), which constrain how a run is driven
-# rather than when the task is done. A project with no note carries only the
-# generic delivery-mode Definition of done.
+# mode-derived. The note's own headings are demoted one level as it is injected,
+# so the note nests inside that section instead of closing it and the completion
+# gate stays under the heading rule 5 names. In no-mistakes mode both variants
+# also carry the same pipeline-ownership rules (drive an active run through its
+# gates, never hand-edit or abort it, never pass --yes) plus the instruction to
+# run the pipeline, which constrain how a run is driven rather than when the task
+# is done. A project with no note carries only the generic delivery-mode
+# Definition of done.
 # Ship and scout briefs both forbid a co-author trailer naming an AI model or
 # assistant on any commit, while human co-author trailers stay allowed.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
@@ -425,6 +428,26 @@ esac
 # normalized body the historical $(...) form produced.
 DOD=${DOD%$'\n'}
 
+# fm_brief_demote_headings - read a note body on stdin and print it with every
+# ATX heading pushed one level deeper.
+#
+# The injected note becomes a subsection of the scaffold-owned Definition of done
+# heading, so it must not carry a heading that CLOSES that section. Every real
+# flow note opens with its own `# <project> custom delivery workflow` H1; left at
+# H1 it ends the anchor section, and the scaffold's own `## Reporting completion`
+# gate then lands under the note's heading instead of under the heading rule 5
+# names. Demoting makes the anchor genuinely contain the gate for any note shape,
+# without touching the captain's file on disk.
+# Fenced blocks are skipped so a shell comment inside a fence is never mistaken
+# for a heading, and H6 is the floor because markdown has no H7.
+fm_brief_demote_headings() {
+  awk '
+    /^[ \t]*(```|~~~)/ { fence = !fence }
+    !fence && /^#+ / && index($0, " ") <= 6 { sub(/^#/, "##") }
+    { print }
+  '
+}
+
 # Custom delivery-workflow injection (bin/fm-project-flow-lib.sh). When the
 # project has a fleet-private note, that note carries the project's own
 # completion contract, so it REPLACES the generic delivery-mode Definition of
@@ -437,7 +460,7 @@ DOD=${DOD%$'\n'}
 # line are written verbatim, never re-evaluated. A project with no note leaves
 # $DOD byte-identical.
 if FLOW_NOTE=$(fm_project_flow_note "$DATA" "$REPO"); then
-  FLOW_BODY=$(cat "$FLOW_NOTE")
+  FLOW_BODY=$(fm_brief_demote_headings < "$FLOW_NOTE")
   DOD_ANCHOR='Definition of done - MANDATORY custom delivery workflow'
   # The precedence sentence is load-bearing, not decoration: rule 1 is still
   # derived from the delivery mode, so a local-only project carrying a custom
@@ -453,19 +476,36 @@ This contract is the project's single source of truth, injected here so it reach
   # reporting states without restating or reinterpreting any of the flow's steps.
   # It is a subsection of the heading above so the brief's only `done:` gate
   # lives under the section rule 5 points at through $DOD_ANCHOR.
-  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown, and only the '"$PAUSED_VERB"' break-out interpolates.
+  # A custom flow typically ends at a human gate (a captain preview, a stage
+  # sign-off, a PR review). That is NOT the pause verb: rule 5 reserves that verb
+  # for a wait that clears on its own, and firstmate answers it by leaving the
+  # idle pane alone on a long recheck cadence, so a review-ready handoff reported
+  # that way never reaches the captain. `needs-decision:` is the verb that means
+  # a human must act, so the bridge names it for the handoff and keeps the pause
+  # verb for a genuinely self-clearing wait such as a running deploy.
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown, and only the '"$PAUSED_VERB"' break-outs interpolate.
   FLOW_TAIL='## Reporting completion
 Committing the change is not this task'"'"'s completion gate; the workflow above owns that gate.
-Carry that workflow through to the point where it hands the work off, then report that point per rule 5: `done: {summary}` when it leaves nothing further for you to do, or `'"$PAUSED_VERB"': {why}` while it waits on a review or deploy you must return to.
+Carry that workflow through to the point where it hands the work off, then report that point per rule 5.
+Append `done: {summary}` when the workflow leaves nothing further for you to do.
+Append `needs-decision: {what firstmate or the captain must decide}` when it hands off to a review, approval, or sign-off that will not clear on its own - a human has to act, so never report that handoff as `'"$PAUSED_VERB"':`.
+Append `'"$PAUSED_VERB"': {why}` only for a bounded wait you expect to clear by itself and must come back to, such as a deploy run in progress.
 Never report completion merely because the change is committed.'
   if [ -n "$NM_INIT_LINE" ]; then
     # A custom flow may still run the pipeline (Setup also runs `no-mistakes
     # doctor` in this mode), so the pipeline-ownership and authority rules ride
     # along as their own subsection. They constrain how a run is driven and
     # never redefine the completion gate the flow above owns.
+    # The generic Definition of done this replaces carried the ONLY instruction
+    # that ever started a run, so this section restates the trigger: a note that
+    # is silent about validation would otherwise leave a no-mistakes-mode project
+    # running `no-mistakes doctor` in Setup and then never validating at all. It
+    # stays deferential to the flow, because a note may replace or forbid the
+    # pipeline and the precedence rule above already makes the flow win.
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown.
     FLOW_PIPELINE_LEAD='## Validation pipeline rules
-These bind you whenever a step of the workflow above runs the `no-mistakes` pipeline; they govern how you drive that run and never move the completion gate the workflow above owns.'
+This project'"'"'s registered delivery mode is **no-mistakes**, so the pipeline is this task'"'"'s default validation: run `/no-mistakes` at the workflow'"'"'s validation step unless the workflow above puts its own validation in that place or tells you not to run the pipeline.
+The rules below bind you whenever that run is active; they govern how you drive it and never move the completion gate the workflow above owns.'
     DOD=$(printf '%s\n\n%s\n\n%s\n%s\n\n%s' \
       "$FLOW_LEAD" "$FLOW_BODY" "$FLOW_PIPELINE_LEAD" "$NM_GUARDRAILS" "$FLOW_TAIL")
   else

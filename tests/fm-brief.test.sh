@@ -841,11 +841,21 @@ test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
         "custom-flow brief dropped the prohibition on hand-fixing an active run"
       assert_grep "Avoid \`--yes\`" "$brief" \
         "custom-flow brief dropped the --yes prohibition that protects captain authority"
+      # The guardrails only bind if something starts a run: the generic
+      # Definition of done this replaced held the only instruction that ever
+      # did, so a note silent about validation would otherwise run
+      # `no-mistakes doctor` in Setup and then never validate at all.
+      assert_grep "run \`/no-mistakes\` at the workflow's validation step" "$brief" \
+        "custom-flow brief dropped the instruction that starts the validation pipeline"
+      assert_grep "unless the workflow above puts its own validation in that place" "$brief" \
+        "the pipeline trigger does not defer to a flow that replaces or forbids the pipeline"
     else
       assert_no_grep "## Validation pipeline rules" "$brief" \
         "$mode custom-flow brief carries pipeline rules for a mode with no pipeline"
       assert_no_grep "Avoid \`--yes\`" "$brief" \
         "$mode custom-flow brief carries the --yes rule for a mode with no pipeline"
+      assert_no_grep "run \`/no-mistakes\`" "$brief" \
+        "$mode custom-flow brief starts a pipeline the mode does not use"
     fi
   done
   pass "fm-brief.sh: no-mistakes pipeline rules survive a custom Definition of done"
@@ -855,6 +865,24 @@ test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
 # The custom-flow injection renames that heading, so the pointer must follow the
 # rename and the gate must live under it - the original defect was exactly a
 # crewmate resolving a completion pointer to the wrong section.
+# assert_gate_under_anchor <file> <anchor-heading-text> <label>: the completion
+# bridge must be reached while still inside the named section. Any top-level
+# heading in between closes that section, and reaching end of file without ever
+# seeing the bridge fails too - an ordering guard that can only fail on the
+# heading it happens to look for would report coverage it does not have.
+# Fenced blocks are skipped for the same reason bin/fm-brief.sh skips them: a
+# shell comment inside a fence is not a markdown heading and closes nothing.
+assert_gate_under_anchor() {
+  awk -v anchor="# $2" '
+    /^[ \t]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    $0 == anchor { seen = 1; next }
+    seen && /^# / { exit 1 }
+    seen && $0 == "## Reporting completion" { found = 1; exit 0 }
+    END { if (!seen || !found) exit 1 }
+  ' "$1" || fail "$3"
+}
+
 test_rule5_points_at_the_heading_holding_the_done_gate() {
   local home id brief anchor
   home="$TMP_ROOT/flow-anchor-home"
@@ -872,12 +900,8 @@ test_rule5_points_at_the_heading_holding_the_done_gate() {
   # sits between rule 5's pointer and the gate it promises.
   assert_grep "## Reporting completion" "$brief" \
     "the completion bridge is not a subsection of the renamed Definition of done"
-  awk -v anchor="# $anchor" '
-    $0 == anchor { seen = 1; next }
-    seen && /^# / { exit 1 }
-    seen && $0 == "## Reporting completion" { exit 0 }
-    END { if (!seen) exit 1 }
-  ' "$brief" || fail "the \`done:\` gate does not live under the heading rule 5 names"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "the \`done:\` gate does not live under the heading rule 5 names"
 
   id="brief-plain-anchor"
   mkdir -p "$home/data"
@@ -887,6 +911,113 @@ test_rule5_points_at_the_heading_holding_the_done_gate() {
   assert_grep "gate under Definition of done." "$brief" \
     "a no-flow brief lost rule 5's pointer at its generic Definition of done"
   pass "fm-brief.sh: rule 5 names the heading that holds this brief's done gate"
+}
+
+# Every real flow note on disk opens with its own `# <project> custom delivery
+# workflow` heading, which is the ordinary shape for a captain-authored markdown
+# note. Injected verbatim, that heading CLOSES the Definition of done section and
+# strands the completion gate under the note's heading instead - the same
+# wrong-section resolution this whole change exists to stop. The scaffold demotes
+# the note's headings on the way in, and this fixture mirrors a real note's shape
+# (an H1 opener, H2 sections, and a fenced block whose shell comment must not be
+# mistaken for a heading) so that demotion is exercised.
+# assert_line / assert_no_line <exact-line> <file> <msg>: whole-line matching,
+# because assert_grep is a substring match and "## x" is a substring of "### x" -
+# a heading-depth assertion written with it would pass at the wrong depth.
+assert_line() {
+  grep -Fxq -- "$1" "$2" || fail "$3"
+}
+
+assert_no_line() {
+  ! grep -Fxq -- "$1" "$2" || fail "$3"
+}
+
+test_custom_flow_note_with_its_own_headings_keeps_the_gate_under_the_anchor() {
+  local home id brief anchor
+  home="$TMP_ROOT/flow-note-headings-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-04)\n' > "$home/data/projects.md"
+  cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+# flowproj custom delivery workflow
+
+flowproj does NOT use the default pipeline. Follow this flow.
+
+## Flow
+
+1. Open the DRAFT PR, then present the local preview.
+2. Merge to `stage_builds` and watch the deploy:
+
+```sh
+# not a heading: a shell comment inside a fence
+git push
+```
+
+## Tickets
+
+Linear team flowproj, keys FLW-*.
+EOF
+  id="brief-flow-note-headings"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief with a headed note was not scaffolded"
+  anchor="Definition of done - MANDATORY custom delivery workflow"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "a note carrying its own heading stranded the \`done:\` gate outside the section rule 5 names"
+  assert_one_dod "$brief" "custom-flow brief with a headed note"
+  # The note's content survives; only its heading depth changes, so it nests
+  # under the scaffold's Definition of done instead of closing it.
+  assert_line "## flowproj custom delivery workflow" "$brief" \
+    "the note's own top-level heading was not demoted under the Definition of done"
+  assert_line "### Flow" "$brief" \
+    "the note's section headings were not demoted with its top-level heading"
+  assert_line "### Tickets" "$brief" \
+    "the note's later section headings were not demoted"
+  assert_line "# not a heading: a shell comment inside a fence" "$brief" \
+    "a shell comment inside a fenced block was rewritten as if it were a heading"
+  assert_grep "Open the DRAFT PR, then present the local preview." "$brief" \
+    "the headed note lost its flow steps"
+  assert_no_line "# flowproj custom delivery workflow" "$brief" \
+    "the note's top-level heading still closes the Definition of done section"
+  pass "fm-brief.sh: a note carrying its own headings still nests under the anchor"
+}
+
+# The completion bridge must not send a review-ready handoff to the pause verb.
+# Rule 5 in the same brief reserves that verb for a wait that clears on its own,
+# and firstmate answers it by leaving the idle pane alone on a long recheck
+# cadence - so a crewmate that reports a captain preview or a PR review that way
+# goes quiet and the captain is never told the work is ready. `needs-decision:`
+# is the verb that means a human must act.
+test_custom_flow_bridge_escalates_a_human_handoff_instead_of_pausing() {
+  local home id brief
+  home="$TMP_ROOT/flow-handoff-verb-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-04)\n' > "$home/data/projects.md"
+  printf 'Open the draft PR, then present the preview for the captain to review.\n' \
+    > "$home/data/project-flows/flowproj.md"
+  id="brief-flow-handoff-verb"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief was not scaffolded"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'Append `needs-decision: {what firstmate or the captain must decide}`' "$brief" \
+    "the completion bridge does not escalate a human handoff to firstmate or the captain"
+  assert_grep "will not clear on its own" "$brief" \
+    "the completion bridge does not distinguish a human handoff from a self-clearing wait"
+  assert_no_grep "waits on a review or deploy you must return to" "$brief" \
+    "the completion bridge still routes a review handoff to the declared-external-wait verb"
+  assert_grep "such as a deploy run in progress" "$brief" \
+    "the completion bridge no longer reserves the pause verb for a self-clearing wait"
+  # The bridge must speak the configured pause verb, not a hardcoded "paused".
+  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
+    "$ROOT/bin/fm-brief.sh" "$id-verb" flowproj >/dev/null 2>&1
+  brief="$home/data/$id-verb/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'Append `awaiting: {why}` only for a bounded wait' "$brief" \
+    "the completion bridge hardcodes the default pause verb"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_no_grep '`paused: {why}`' "$brief" \
+    "the completion bridge still instructs the default pause status"
+  pass "fm-brief.sh: the custom-flow bridge escalates a human handoff, never pauses on it"
 }
 
 # Scout and secondmate scaffolds are byte-identical whether or not the project
@@ -1131,6 +1262,8 @@ test_custom_flow_replaces_generic_definition_of_done
 test_custom_flow_states_precedence_over_mode_rules
 test_custom_flow_keeps_no_mistakes_pipeline_guardrails
 test_rule5_points_at_the_heading_holding_the_done_gate
+test_custom_flow_note_with_its_own_headings_keeps_the_gate_under_the_anchor
+test_custom_flow_bridge_escalates_a_human_handoff_instead_of_pausing
 test_custom_flow_note_leaves_scout_and_secondmate_briefs_byte_identical
 test_no_custom_flow_note_scaffolds_unchanged
 test_empty_custom_flow_note_is_not_a_marker
