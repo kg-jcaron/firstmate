@@ -2,13 +2,14 @@
 # Shared "supervision missing" predicates.
 # Usage: . bin/fm-supervision-lib.sh
 #
-# fm_supervision_status/fm_supervision_unhealthy are true exactly when a
-# firstmate home has in-flight work (a state/<id>.meta exists) but no watcher has
-# a fresh liveness beacon (state/.last-watcher-beat, touched every poll cycle,
-# within the grace window). bin/fm-guard.sh uses this grace-based warning
-# predicate directly; bin/fm-turnend-guard.sh uses the status fields here for its
-# banner but performs its end-of-turn block decision with the live watcher lock
-# check in bin/fm-wake-lib.sh.
+# Reports whether a firstmate home needs supervision because it has in-flight
+# work (a state/<id>.meta exists) or an X-mode relay poll
+# (state/x-watch.check.sh), and whether its watcher has a fresh liveness beacon
+# (state/.last-watcher-beat, touched every poll cycle, within the grace window).
+# bin/fm-guard.sh keeps its task-specific grace-based warning predicate;
+# bin/fm-turnend-guard.sh uses the status fields here for its banner but performs
+# its end-of-turn block decision with the live watcher lock check in
+# bin/fm-wake-lib.sh.
 #
 # fm_supervision_undispatched is the separate claimed-but-never-dispatched
 # predicate: a backlog row recorded as started for which no worker exists.
@@ -41,6 +42,7 @@ fm_sup_stat_mtime() {
 # fm_supervision_status <state-dir> [grace-seconds]
 # Populates, for the state dir at $1:
 #   FM_SUP_IN_FLIGHT      count of state/*.meta (in-flight tasks)
+#   FM_SUP_NEEDED         true/false - in-flight work or an X-mode relay poll
 #   FM_SUP_WATCHER_FRESH  true/false - a watcher beacon within the grace window
 #   FM_SUP_BEACON_DESC    human-readable beacon age, for banners ("never" if absent)
 #   FM_SUP_QUEUE_PENDING  true/false - state/.wake-queue has unread records
@@ -49,6 +51,7 @@ fm_sup_stat_mtime() {
 fm_supervision_status() {
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} meta beat m age
   FM_SUP_IN_FLIGHT=0
+  FM_SUP_NEEDED=false
   FM_SUP_WATCHER_FRESH=false
   FM_SUP_BEACON_DESC=never
   FM_SUP_QUEUE_PENDING=false
@@ -57,6 +60,9 @@ fm_supervision_status() {
     [ -e "$meta" ] || continue
     FM_SUP_IN_FLIGHT=$((FM_SUP_IN_FLIGHT + 1))
   done
+  if [ "$FM_SUP_IN_FLIGHT" -gt 0 ] || [ -f "$state/x-watch.check.sh" ]; then
+    FM_SUP_NEEDED=true
+  fi
 
   beat="$state/.last-watcher-beat"
   if [ -e "$beat" ]; then
@@ -74,6 +80,14 @@ fm_supervision_status() {
   # shellcheck disable=SC2034 # Read by callers (fm-guard.sh) after sourcing.
   [ -s "$state/.wake-queue" ] && FM_SUP_QUEUE_PENDING=true
   return 0
+}
+
+# fm_supervision_needed <state-dir> [grace-seconds]
+# Exit 0 (true) exactly when in-flight work or an X-mode relay poll needs a
+# watcher. Exit 1 (false) for an idle home.
+fm_supervision_needed() {
+  fm_supervision_status "$@"
+  [ "$FM_SUP_NEEDED" = true ]
 }
 
 # fm_supervision_unhealthy <state-dir> [grace-seconds]
