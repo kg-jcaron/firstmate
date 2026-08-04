@@ -45,11 +45,11 @@
 #                captain approves, firstmate merges to local main
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # When the project has a fleet-private custom delivery-workflow note (see
-# bin/fm-project-flow-lib.sh; data/project-flows/<name>.md), its full contract is
-# injected into the ship brief ahead of the Definition of done and explicitly
-# supersedes the generic delivery-mode instructions, so the crewmate follows the
-# custom flow regardless of how the dispatching session started. A project with
-# no note scaffolds exactly as before.
+# bin/fm-project-flow-lib.sh; data/project-flows/<name>.md), its full contract
+# becomes the ship brief's Definition of done and the generic delivery-mode one
+# is not emitted at all, so the crewmate reads exactly one completion contract
+# regardless of how the dispatching session started. A project with no note
+# scaffolds exactly as before.
 # Ship and scout briefs both forbid a co-author trailer naming an AI model or
 # assistant on any commit, while human co-author trailers stay allowed.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
@@ -404,18 +404,30 @@ esac
 DOD=${DOD%$'\n'}
 
 # Custom delivery-workflow injection (bin/fm-project-flow-lib.sh). When the
-# project has a fleet-private note, prepend its full contract to the Definition
-# of done so it reaches the crewmate no matter how the dispatching session
-# started. The note body is read into a variable and expanded once inside the
-# final heredoc, so its own backticks, "$" and any literal EOF line are written
-# verbatim, never re-evaluated. A project with no note leaves $DOD byte-identical.
+# project has a fleet-private note, that note carries the project's own
+# completion contract, so it REPLACES the generic delivery-mode Definition of
+# done built above instead of being prepended to it: a brief carries exactly one
+# definition of done. Emitting both left the generic "complete once committed"
+# gate as the last and most concrete instruction in the file, and workers
+# followed it over the earlier abstract supersede clause, stopping short of the
+# note's own draft-PR step. The note body is read into a variable and expanded
+# once inside the final heredoc, so its own backticks, "$" and any literal EOF
+# line are written verbatim, never re-evaluated. A project with no note leaves
+# $DOD byte-identical.
 if FLOW_NOTE=$(fm_project_flow_note "$DATA" "$REPO"); then
   FLOW_BODY=$(cat "$FLOW_NOTE")
-  FLOW_LEAD='# Project delivery workflow - MANDATORY custom flow (SUPERSEDES the default below)
-This project ships through a custom delivery workflow. Follow the contract in this section exactly.
-It OVERRIDES any conflicting delivery-mode, push, PR, or "Definition of done" instruction elsewhere in this brief: where they disagree, this section wins.
+  FLOW_LEAD='# Definition of done - MANDATORY custom delivery workflow
+This project ships through a custom delivery workflow, and the contract in this section is this task'"'"'s only definition of done.
+Follow it exactly. The generic delivery-mode instructions do not apply here and are deliberately absent from this brief, so nothing in this brief releases you before this contract is satisfied.
 This contract is the project'"'"'s single source of truth, injected here so it reaches you regardless of how this task was dispatched - do not go looking for it elsewhere, and do not fall back to the default no-mistakes-to-PR pipeline unless this section tells you to.'
-  DOD=$(printf '%s\n\n%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY" "$DOD")
+  # Status-protocol bridge only: it wires the flow's own endpoint to rule 5's
+  # reporting states without restating or reinterpreting any of the flow's steps.
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown, and only the '"$PAUSED_VERB"' break-out interpolates.
+  FLOW_TAIL='# Reporting completion
+Committing the change is not this task'"'"'s completion gate; the workflow above owns that gate.
+Carry that workflow through to the point where it hands the work off, then report that point per rule 5: `done: {summary}` when it leaves nothing further for you to do, or `'"$PAUSED_VERB"': {why}` while it waits on a review or deploy you must return to.
+Never report completion merely because the change is committed.'
+  DOD=$(printf '%s\n\n%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY" "$FLOW_TAIL")
 fi
 
 # Setup section. A fresh ship dispatch lands in a clean disposable worktree; a

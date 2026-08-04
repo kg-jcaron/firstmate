@@ -53,9 +53,9 @@ run_promote() {  # <home> <id>
 }
 
 # A promoted scout on a custom-flow project must carry that project's full flow
-# contract, marked as superseding the default, injected verbatim (backticks and
-# "$" survive), plus the generic Definition of done - identical to a fresh ship
-# dispatch. The meta must flip scout->ship.
+# contract as its one Definition of done, injected verbatim (backticks and "$"
+# survive), with the generic delivery-mode gate absent - identical to a fresh
+# ship dispatch. The meta must flip scout->ship.
 test_promote_injects_custom_flow() {
   local home id brief status
   home="$TMP_ROOT/custom-flow"
@@ -66,10 +66,10 @@ test_promote_injects_custom_flow() {
   expect_code 0 "$status" "promoting a custom-flow scout should exit 0"
   brief="$home/data/$id/promote.md"
   assert_present "$brief" "promotion did not scaffold promote.md"
-  assert_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
-    "promoted custom-flow brief missing the mandatory-flow heading"
-  assert_grep "SUPERSEDES the default" "$brief" \
-    "promoted custom-flow brief did not mark the flow as superseding the default"
+  assert_grep "# Definition of done - MANDATORY custom delivery workflow" "$brief" \
+    "promoted custom-flow brief missing the mandatory-flow Definition of done heading"
+  assert_grep "only definition of done" "$brief" \
+    "promoted custom-flow brief did not claim the flow as its one definition of done"
   assert_grep "local visual preview owed to the captain" "$brief" \
     "promoted custom-flow brief lost the dev-server preview step from the note"
   assert_grep "open a DRAFT PR first" "$brief" \
@@ -79,8 +79,8 @@ test_promote_injects_custom_flow() {
   # shellcheck disable=SC2016 # Literal "$DEPLOY" must stay unexpanded - that is the assertion.
   assert_grep 'watch the $DEPLOY run' "$brief" \
     "promoted custom-flow brief re-evaluated a \"\$\" in the note body"
-  assert_grep "# Definition of done" "$brief" \
-    "promoted custom-flow brief dropped its Definition of done section"
+  assert_no_grep "complete only when committed on your branch" "$brief" \
+    "promoted custom-flow brief kept the generic stop-after-committing gate"
   assert_grep "kind=ship" "$home/state/$id.meta" "promotion did not flip meta to ship"
   assert_no_grep "kind=scout" "$home/state/$id.meta" "promotion left kind=scout in meta"
   pass "fm-promote.sh: a promoted custom-flow scout carries the injected flow contract"
@@ -98,10 +98,10 @@ test_promote_no_note_scaffolds_generic() {
   expect_code 0 "$status" "promoting a no-note scout should exit 0"
   brief="$home/data/$id/promote.md"
   assert_present "$brief" "promotion did not scaffold promote.md for a no-note project"
-  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+  assert_no_grep "MANDATORY custom delivery workflow" "$brief" \
     "no-note promotion leaked a custom-flow section"
-  assert_no_grep "SUPERSEDES the default" "$brief" \
-    "no-note promotion leaked custom-flow supersession wording"
+  assert_no_grep "only definition of done" "$brief" \
+    "no-note promotion leaked custom-flow definition-of-done wording"
   assert_grep "# Definition of done" "$brief" \
     "no-note promotion lost its Definition of done section"
   assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \

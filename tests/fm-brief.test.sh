@@ -643,10 +643,10 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
 }
 
 # A ship brief for a project WITH a fleet-private custom-flow note must carry the
-# note's full contract, marked as superseding the default, and must NOT depend on
-# data/learnings.md having been loaded. The note body is captain free text, so it
-# also exercises the verbatim-injection safety: backticks, "$" and a literal EOF
-# line in the note must survive into the brief unexecuted.
+# note's full contract as the brief's own Definition of done, and must NOT depend
+# on data/learnings.md having been loaded. The note body is captain free text, so
+# it also exercises the verbatim-injection safety: backticks, "$" and a literal
+# EOF line in the note must survive into the brief unexecuted.
 test_custom_flow_note_injected_into_ship_brief() {
   local home id brief note
   home="$TMP_ROOT/custom-flow-home"
@@ -662,10 +662,10 @@ EOF
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "custom-flow ship brief was not scaffolded"
-  assert_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
-    "custom-flow brief missing the mandatory-flow heading"
-  assert_grep "SUPERSEDES the default" "$brief" \
-    "custom-flow brief did not mark the flow as superseding the default"
+  assert_grep "# Definition of done - MANDATORY custom delivery workflow" "$brief" \
+    "custom-flow brief missing the mandatory-flow Definition of done heading"
+  assert_grep "only definition of done" "$brief" \
+    "custom-flow brief did not claim the flow as the task's one definition of done"
   assert_grep "local visual preview owed to the captain" "$brief" \
     "custom-flow brief lost the dev-server preview step from the note"
   assert_grep "open a DRAFT PR first" "$brief" \
@@ -676,10 +676,76 @@ EOF
   # shellcheck disable=SC2016 # Literal "$DEPLOY" must stay unexpanded - that is the assertion.
   assert_grep 'watch the $DEPLOY run' "$brief" \
     "custom-flow brief re-evaluated a \"\$\" in the note body instead of writing it verbatim"
-  # The generic Definition of done still follows the injected section.
-  assert_grep "# Definition of done" "$brief" \
-    "custom-flow brief dropped its Definition of done section"
-  pass "fm-brief.sh: custom-flow note is injected verbatim and marked as superseding"
+  # The flow's own contract is the brief's ONE definition of done, and the
+  # generic delivery-mode gate that used to follow it is gone.
+  assert_no_grep "complete only when committed on your branch" "$brief" \
+    "custom-flow brief still carries the generic stop-after-committing gate"
+  assert_grep "# Reporting completion" "$brief" \
+    "custom-flow brief lost the status-protocol bridge to the flow's own endpoint"
+  pass "fm-brief.sh: custom-flow note is injected verbatim as the one definition of done"
+}
+
+# The observed 2026-08-04 failure: a custom-flow brief that also carried the
+# generic delivery-mode Definition of done ended with a concrete "complete once
+# committed" instruction, so workers committed and stopped short of the flow's
+# own draft-PR step. Every delivery mode, for both a fresh ship brief and a
+# --promote brief, must now emit exactly one definition of done.
+# assert_one_dod <file> <label>: the file must carry exactly one
+# "# Definition of done" heading, so no two completion contracts can compete.
+assert_one_dod() {
+  local count
+  count=$(grep -c '^# Definition of done' "$1") || count=0
+  [ "$count" = 1 ] || fail "$2 must carry exactly one Definition of done heading (found $count)"
+}
+
+test_custom_flow_replaces_generic_definition_of_done() {
+  local home id brief mode n
+  n=0
+  for mode in no-mistakes direct-PR local-only; do
+    n=$((n + 1))
+    home="$TMP_ROOT/flow-one-dod-home-$n"
+    mkdir -p "$home/data/project-flows"
+    printf -- '- flowproj [%s] - flow project (added 2026-08-04)\n' "$mode" > "$home/data/projects.md"
+    printf 'Custom flow: open the draft PR, then present the preview.\n' \
+      > "$home/data/project-flows/flowproj.md"
+
+    id="brief-one-dod-$n"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode custom-flow ship brief was not scaffolded"
+    assert_grep "Custom flow: open the draft PR" "$brief" \
+      "$mode custom-flow ship brief lost the flow contract"
+    assert_no_grep "complete only when committed on your branch" "$brief" \
+      "$mode custom-flow ship brief kept the generic stop-after-committing gate"
+    assert_one_dod "$brief" "$mode custom-flow ship brief"
+
+    id="promote-one-dod-$n"
+    mkdir -p "$home/data/$id"
+    printf 'original scout brief\n' > "$home/data/$id/brief.md"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj --promote >/dev/null 2>&1
+    brief="$home/data/$id/promote.md"
+    assert_present "$brief" "$mode custom-flow promote brief was not scaffolded"
+    assert_no_grep "complete only when committed on your branch" "$brief" \
+      "$mode custom-flow promote brief kept the generic stop-after-committing gate"
+    assert_one_dod "$brief" "$mode custom-flow promote brief"
+  done
+
+  # The same three modes with no note keep the generic gate exactly as before.
+  n=0
+  for mode in no-mistakes direct-PR local-only; do
+    n=$((n + 1))
+    home="$TMP_ROOT/plain-one-dod-home-$n"
+    mkdir -p "$home/data"
+    printf -- '- plainproj [%s] - plain project (added 2026-08-04)\n' "$mode" > "$home/data/projects.md"
+    id="brief-plain-dod-$n"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" plainproj >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_grep "complete only when committed on your branch" "$brief" \
+      "$mode brief with no custom flow lost its generic Definition of done gate"
+    assert_no_grep "MANDATORY custom delivery workflow" "$brief" \
+      "$mode brief with no custom flow leaked a custom-flow Definition of done"
+  done
+  pass "fm-brief.sh: a custom flow replaces the generic Definition of done, one per brief"
 }
 
 # A project WITHOUT a note must scaffold exactly as today: no injected section,
@@ -692,10 +758,10 @@ test_no_custom_flow_note_scaffolds_unchanged() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" plainproj >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "plain ship brief was not scaffolded"
-  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+  assert_no_grep "MANDATORY custom delivery workflow" "$brief" \
     "plain brief leaked a custom-flow section with no note present"
-  assert_no_grep "SUPERSEDES the default" "$brief" \
-    "plain brief leaked custom-flow supersession wording with no note present"
+  assert_no_grep "only definition of done" "$brief" \
+    "plain brief leaked custom-flow definition-of-done wording with no note present"
   assert_grep "# Definition of done" "$brief" \
     "plain brief lost its Definition of done section"
   pass "fm-brief.sh: a project with no custom-flow note scaffolds unchanged"
@@ -711,7 +777,7 @@ test_empty_custom_flow_note_is_not_a_marker() {
   id="brief-empty-custom-flow-e3"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" emptyproj >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
-  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+  assert_no_grep "MANDATORY custom delivery workflow" "$brief" \
     "an empty note wrongly injected a custom-flow section"
   pass "fm-brief.sh: an empty custom-flow note is treated as absent"
 }
@@ -727,7 +793,7 @@ test_scout_does_not_inject_custom_flow() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj --scout >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "scout brief was not scaffolded"
-  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+  assert_no_grep "MANDATORY custom delivery workflow" "$brief" \
     "scout brief wrongly injected the ship delivery-workflow contract"
   pass "fm-brief.sh: a scout never carries the ship custom-flow contract"
 }
@@ -778,7 +844,7 @@ EOF
     "--promote brief missing the scratch-inventory step"
   assert_no_grep "at a detached HEAD on a clean default branch" "$brief" \
     "--promote brief kept the fresh-clone Setup text"
-  assert_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+  assert_grep "MANDATORY custom delivery workflow" "$brief" \
     "--promote brief did not inject the custom-flow contract"
   assert_grep "local visual preview owed to the captain" "$brief" \
     "--promote brief lost the note body"
@@ -803,7 +869,7 @@ test_promote_flag_no_note_scaffolds_generic() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" plainproj --promote >/dev/null 2>&1
   brief="$home/data/$id/promote.md"
   assert_present "$brief" "--promote did not scaffold promote.md for a no-note project"
-  assert_no_grep "# Project delivery workflow - MANDATORY custom flow" "$brief" \
+  assert_no_grep "MANDATORY custom delivery workflow" "$brief" \
     "--promote no-note brief leaked a custom-flow section"
   assert_grep "# Definition of done" "$brief" \
     "--promote no-note brief lost its Definition of done section"
@@ -862,6 +928,7 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_custom_flow_note_injected_into_ship_brief
+test_custom_flow_replaces_generic_definition_of_done
 test_no_custom_flow_note_scaffolds_unchanged
 test_empty_custom_flow_note_is_not_a_marker
 test_scout_does_not_inject_custom_flow
