@@ -680,7 +680,7 @@ EOF
   # generic delivery-mode gate that used to follow it is gone.
   assert_no_grep "complete only when committed on your branch" "$brief" \
     "custom-flow brief still carries the generic stop-after-committing gate"
-  assert_grep "# Reporting completion" "$brief" \
+  assert_grep "## Reporting completion" "$brief" \
     "custom-flow brief lost the status-protocol bridge to the flow's own endpoint"
   pass "fm-brief.sh: custom-flow note is injected verbatim as the one definition of done"
 }
@@ -698,6 +698,29 @@ assert_one_dod() {
   [ "$count" = 1 ] || fail "$2 must carry exactly one Definition of done heading (found $count)"
 }
 
+# rule1_marker <mode> <id>: the rule 1 fragment unique to that delivery mode.
+# Rule 1 stays mode-derived even under a custom flow, so asserting it per
+# iteration is what stops a loop over modes from silently collapsing onto the
+# no-mistakes fallback (an unparsable registry line) while still passing.
+# shellcheck disable=SC2016 # The backticks are literal brief markdown being matched, not a command substitution.
+rule1_marker() {
+  case "$1" in
+    direct-PR)  printf 'push only your `fm/%s` branch' "$2" ;;
+    local-only) printf 'Never push to any remote and never open a PR' ;;
+    *)          printf 'Never push to the default branch. Never merge a PR.' ;;
+  esac
+}
+
+# generic_dod_marker <mode>: a line unique to that mode's generic Definition of
+# done, so a no-flow brief proves which mode's contract it actually carries.
+generic_dod_marker() {
+  case "$1" in
+    direct-PR)  printf 'This project ships **direct-PR**' ;;
+    local-only) printf 'This project ships **local-only**' ;;
+    *)          printf 'Firstmate will then instruct you to run /no-mistakes' ;;
+  esac
+}
+
 test_custom_flow_replaces_generic_definition_of_done() {
   local home id brief mode n
   n=0
@@ -713,10 +736,14 @@ test_custom_flow_replaces_generic_definition_of_done() {
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
     assert_present "$brief" "$mode custom-flow ship brief was not scaffolded"
+    assert_grep "$(rule1_marker "$mode" "$id")" "$brief" \
+      "$mode custom-flow ship brief did not resolve to the $mode delivery mode"
     assert_grep "Custom flow: open the draft PR" "$brief" \
       "$mode custom-flow ship brief lost the flow contract"
     assert_no_grep "complete only when committed on your branch" "$brief" \
       "$mode custom-flow ship brief kept the generic stop-after-committing gate"
+    assert_no_grep "$(generic_dod_marker "$mode")" "$brief" \
+      "$mode custom-flow ship brief kept the generic delivery-mode Definition of done"
     assert_one_dod "$brief" "$mode custom-flow ship brief"
 
     id="promote-one-dod-$n"
@@ -725,12 +752,18 @@ test_custom_flow_replaces_generic_definition_of_done() {
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj --promote >/dev/null 2>&1
     brief="$home/data/$id/promote.md"
     assert_present "$brief" "$mode custom-flow promote brief was not scaffolded"
+    assert_grep "$(rule1_marker "$mode" "$id")" "$brief" \
+      "$mode custom-flow promote brief did not resolve to the $mode delivery mode"
     assert_no_grep "complete only when committed on your branch" "$brief" \
       "$mode custom-flow promote brief kept the generic stop-after-committing gate"
+    assert_no_grep "$(generic_dod_marker "$mode")" "$brief" \
+      "$mode custom-flow promote brief kept the generic delivery-mode Definition of done"
     assert_one_dod "$brief" "$mode custom-flow promote brief"
   done
 
-  # The same three modes with no note keep the generic gate exactly as before.
+  # The same three modes with no note keep their own generic contract intact,
+  # named line by line so a collapsed loop or a silently reworded generic
+  # Definition of done cannot pass.
   n=0
   for mode in no-mistakes direct-PR local-only; do
     n=$((n + 1))
@@ -740,12 +773,178 @@ test_custom_flow_replaces_generic_definition_of_done() {
     id="brief-plain-dod-$n"
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" plainproj >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
+    assert_grep "$(rule1_marker "$mode" "$id")" "$brief" \
+      "$mode brief with no custom flow did not resolve to the $mode delivery mode"
+    assert_grep "$(generic_dod_marker "$mode")" "$brief" \
+      "$mode brief with no custom flow lost its own generic Definition of done"
     assert_grep "complete only when committed on your branch" "$brief" \
       "$mode brief with no custom flow lost its generic Definition of done gate"
     assert_no_grep "MANDATORY custom delivery workflow" "$brief" \
       "$mode brief with no custom flow leaked a custom-flow Definition of done"
+    assert_no_grep "## Reporting completion" "$brief" \
+      "$mode brief with no custom flow leaked the custom-flow completion bridge"
   done
   pass "fm-brief.sh: a custom flow replaces the generic Definition of done, one per brief"
+}
+
+# The precedence sentence is the only thing that resolves a conflict between the
+# flow and the still-mode-derived rule 1: a local-only project carrying a
+# PR-opening custom flow reads "never push and never open a PR" alongside a flow
+# that pushes and opens a draft PR. The brief must say which one wins, and must
+# never claim the generic delivery-mode instructions are absent, because rule 1
+# is one of them and is still emitted.
+test_custom_flow_states_precedence_over_mode_rules() {
+  local home id brief
+  home="$TMP_ROOT/flow-precedence-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [local-only] - flow project (added 2026-08-04)\n' > "$home/data/projects.md"
+  printf 'Push the branch and open a DRAFT PR, then merge to the stage branch.\n' \
+    > "$home/data/project-flows/flowproj.md"
+  id="brief-flow-precedence"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "local-only custom-flow brief was not scaffolded"
+  assert_grep "Never push to any remote and never open a PR" "$brief" \
+    "local-only custom-flow brief lost its mode-derived rule 1 safety boundary"
+  assert_grep "This section WINS over every other instruction in this brief" "$brief" \
+    "custom-flow brief has no precedence rule to resolve a conflicting mode-derived rule"
+  assert_grep "completion instruction elsewhere here disagrees with this contract" "$brief" \
+    "custom-flow brief precedence rule does not cover conflicting delivery-mode instructions"
+  assert_no_grep "deliberately absent from this brief" "$brief" \
+    "custom-flow brief still claims the generic delivery-mode instructions are absent"
+  pass "fm-brief.sh: a custom flow declares precedence over the mode-derived rules"
+}
+
+# The pipeline-ownership and authority rules are not completion gates, so
+# replacing the generic Definition of done must not drop them: a custom-flow
+# project in no-mistakes mode still runs `no-mistakes doctor` in Setup and may
+# run the pipeline. They stay out of the two modes that have no pipeline.
+test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
+  local home id brief mode n
+  n=0
+  for mode in no-mistakes direct-PR local-only; do
+    n=$((n + 1))
+    home="$TMP_ROOT/flow-guardrail-home-$n"
+    mkdir -p "$home/data/project-flows"
+    printf -- '- flowproj [%s] - flow project (added 2026-08-04)\n' "$mode" > "$home/data/projects.md"
+    printf 'Gate green, then open the draft PR.\n' > "$home/data/project-flows/flowproj.md"
+    id="brief-flow-guardrail-$n"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode custom-flow brief was not scaffolded"
+    assert_grep "$(rule1_marker "$mode" "$id")" "$brief" \
+      "$mode custom-flow brief did not resolve to the $mode delivery mode"
+    if [ "$mode" = no-mistakes ]; then
+      assert_grep "## Validation pipeline rules" "$brief" \
+        "custom-flow brief dropped the no-mistakes pipeline rules section"
+      assert_grep "Do not hand-edit, commit, abort, or restart while a run is active" "$brief" \
+        "custom-flow brief dropped the prohibition on hand-fixing an active run"
+      assert_grep "Avoid \`--yes\`" "$brief" \
+        "custom-flow brief dropped the --yes prohibition that protects captain authority"
+    else
+      assert_no_grep "## Validation pipeline rules" "$brief" \
+        "$mode custom-flow brief carries pipeline rules for a mode with no pipeline"
+      assert_no_grep "Avoid \`--yes\`" "$brief" \
+        "$mode custom-flow brief carries the --yes rule for a mode with no pipeline"
+    fi
+  done
+  pass "fm-brief.sh: no-mistakes pipeline rules survive a custom Definition of done"
+}
+
+# Rule 5 sends the crewmate to the section that holds this brief's `done:` gate.
+# The custom-flow injection renames that heading, so the pointer must follow the
+# rename and the gate must live under it - the original defect was exactly a
+# crewmate resolving a completion pointer to the wrong section.
+test_rule5_points_at_the_heading_holding_the_done_gate() {
+  local home id brief anchor
+  home="$TMP_ROOT/flow-anchor-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-04)\n' > "$home/data/projects.md"
+  printf 'Open the draft PR, then present the preview.\n' > "$home/data/project-flows/flowproj.md"
+  id="brief-flow-anchor"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief was not scaffolded"
+  anchor="Definition of done - MANDATORY custom delivery workflow"
+  assert_grep "gate under $anchor." "$brief" \
+    "rule 5 still points at the generic heading a custom-flow brief no longer has"
+  # The bridge that defines the gate is a subsection of that heading, so nothing
+  # sits between rule 5's pointer and the gate it promises.
+  assert_grep "## Reporting completion" "$brief" \
+    "the completion bridge is not a subsection of the renamed Definition of done"
+  awk -v anchor="# $anchor" '
+    $0 == anchor { seen = 1; next }
+    seen && /^# / { exit 1 }
+    seen && $0 == "## Reporting completion" { exit 0 }
+    END { if (!seen) exit 1 }
+  ' "$brief" || fail "the \`done:\` gate does not live under the heading rule 5 names"
+
+  id="brief-plain-anchor"
+  mkdir -p "$home/data"
+  printf -- '- plainproj [no-mistakes] - plain project (added 2026-08-04)\n' >> "$home/data/projects.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" plainproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "gate under Definition of done." "$brief" \
+    "a no-flow brief lost rule 5's pointer at its generic Definition of done"
+  pass "fm-brief.sh: rule 5 names the heading that holds this brief's done gate"
+}
+
+# Scout and secondmate scaffolds are byte-identical whether or not the project
+# carries a custom-flow note. Generating both from the same home and task id
+# keeps every embedded path and id identical, so this diff fails loudly if the
+# ship-only injection ever leaks into a deliverable that is not a delivery.
+test_custom_flow_note_leaves_scout_and_secondmate_briefs_byte_identical() {
+  local home id brief with_note
+  home="$TMP_ROOT/flow-byte-identical-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-04)\n' > "$home/data/projects.md"
+  printf 'Open the draft PR, then merge to the stage branch.\n' \
+    > "$home/data/project-flows/flowproj.md"
+  with_note="$TMP_ROOT/flow-byte-identical-with-note.md"
+
+  id="brief-flow-scout-identical"
+  brief="$home/data/$id/brief.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj --scout >/dev/null 2>&1
+  assert_present "$brief" "scout brief with a note present was not scaffolded"
+  cp "$brief" "$with_note"
+  rm -f "$brief" "$home/data/project-flows/flowproj.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj --scout >/dev/null 2>&1
+  assert_present "$brief" "scout brief with no note was not scaffolded"
+  cmp -s "$with_note" "$brief" \
+    || fail "a custom-flow note changed the scout brief; it must be byte-identical"
+
+  printf 'Open the draft PR, then merge to the stage branch.\n' \
+    > "$home/data/project-flows/flowproj.md"
+  id="brief-flow-secondmate-identical"
+  brief="$home/data/$id/brief.md"
+  FM_SECONDMATE_CHARTER='Own the flowproj domain.' FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" "$id" --secondmate flowproj >/dev/null 2>&1
+  assert_present "$brief" "secondmate charter with a note present was not scaffolded"
+  cp "$brief" "$with_note"
+  rm -f "$brief" "$home/data/project-flows/flowproj.md"
+  FM_SECONDMATE_CHARTER='Own the flowproj domain.' FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" "$id" --secondmate flowproj >/dev/null 2>&1
+  assert_present "$brief" "secondmate charter with no note was not scaffolded"
+  cmp -s "$with_note" "$brief" \
+    || fail "a custom-flow note changed the secondmate charter; it must be byte-identical"
+
+  # Positive control for the two comparisons above: run the identical
+  # with-note/without-note procedure on a ship brief, where the note MUST change
+  # the output. If this one compared equal, the byte-identical assertions would
+  # be proving nothing.
+  printf 'Open the draft PR, then merge to the stage branch.\n' \
+    > "$home/data/project-flows/flowproj.md"
+  id="brief-flow-ship-differs"
+  brief="$home/data/$id/brief.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  assert_present "$brief" "ship brief with a note present was not scaffolded"
+  cp "$brief" "$with_note"
+  rm -f "$brief" "$home/data/project-flows/flowproj.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  assert_present "$brief" "ship brief with no note was not scaffolded"
+  ! cmp -s "$with_note" "$brief" \
+    || fail "a custom-flow note did not change the ship brief, so this comparison proves nothing"
+  pass "fm-brief.sh: a custom-flow note never reaches scout or secondmate scaffolds"
 }
 
 # A project WITHOUT a note must scaffold exactly as today: no injected section,
@@ -929,6 +1128,10 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_custom_flow_note_injected_into_ship_brief
 test_custom_flow_replaces_generic_definition_of_done
+test_custom_flow_states_precedence_over_mode_rules
+test_custom_flow_keeps_no_mistakes_pipeline_guardrails
+test_rule5_points_at_the_heading_holding_the_done_gate
+test_custom_flow_note_leaves_scout_and_secondmate_briefs_byte_identical
 test_no_custom_flow_note_scaffolds_unchanged
 test_empty_custom_flow_note_is_not_a_marker
 test_scout_does_not_inject_custom_flow

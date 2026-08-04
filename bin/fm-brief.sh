@@ -48,8 +48,14 @@
 # bin/fm-project-flow-lib.sh; data/project-flows/<name>.md), its full contract
 # becomes the ship brief's Definition of done and the generic delivery-mode one
 # is not emitted at all, so the crewmate reads exactly one completion contract
-# regardless of how the dispatching session started. A project with no note
-# scaffolds exactly as before.
+# regardless of how the dispatching session started. That injected section states
+# that it wins over any conflicting delivery-mode, branch, push, PR, or
+# completion instruction elsewhere in the brief, because rule 1 stays
+# mode-derived. In no-mistakes mode both variants also carry the same
+# pipeline-ownership rules (drive an active run through its gates, never
+# hand-edit or abort it, never pass --yes), which constrain how a run is driven
+# rather than when the task is done. A project with no note carries only the
+# generic delivery-mode Definition of done.
 # Ship and scout briefs both forbid a co-author trailer naming an AI model or
 # assistant on any commit, while human co-author trailers stay allowed.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
@@ -345,6 +351,30 @@ EOF
 # NM_INIT_LINE is the single owner of the no-mistakes doctor/init instruction; both
 # the fresh and promote Setup sections place it (at a different list number).
 NM_INIT_LINE=""
+
+# DOD_ANCHOR is the single owner of the completion section's heading text, so
+# rule 5 can point at whichever heading actually holds this brief's `done:` gate.
+# The custom-flow injection below renames it and keeps the gate underneath it.
+DOD_ANCHOR='Definition of done'
+
+# NM_GUARDRAILS is the single owner of the rules that constrain how a crewmate
+# drives an active no-mistakes run. They are about pipeline ownership and
+# approval authority, not about when the task is complete, so they must reach a
+# no-mistakes-mode crewmate whichever Definition of done the brief carries: the
+# generic one below, or a project's custom delivery workflow.
+IFS= read -r -d '' NM_GUARDRAILS <<'EOF' || true
+You drive no-mistakes by responding to its gates, not by implementing fixes.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
+Do not hand-edit, commit, abort, or restart while a run is active, and do not fix findings yourself - the pipeline applies every fix.
+
+Two firstmate-specific rules layer on top of that guidance:
+- ask-user findings are never yours to answer: escalate to firstmate (rule 7) and stop.
+  Firstmate applies the authority contract in its `AGENTS.md` and obtains any required captain decision.
+  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
+- Avoid `--yes`: it would silently bypass firstmate's authority check and any required captain escalation, and the captain owns the ask-user decisions it would auto-resolve.
+EOF
+NM_GUARDRAILS=${NM_GUARDRAILS%$'\n'}
+
 case "$MODE" in
   direct-PR)
     SETUP2=""
@@ -381,15 +411,7 @@ The task is complete only when committed on your branch.
 When you believe it is complete, append \`done: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
-You drive no-mistakes by responding to its gates, not by implementing fixes.
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
-Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
-
-Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are never yours to answer: escalate to firstmate (rule 7) and stop.
-  Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
-  When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
-- Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
+$NM_GUARDRAILS
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
@@ -416,18 +438,39 @@ DOD=${DOD%$'\n'}
 # $DOD byte-identical.
 if FLOW_NOTE=$(fm_project_flow_note "$DATA" "$REPO"); then
   FLOW_BODY=$(cat "$FLOW_NOTE")
-  FLOW_LEAD='# Definition of done - MANDATORY custom delivery workflow
-This project ships through a custom delivery workflow, and the contract in this section is this task'"'"'s only definition of done.
-Follow it exactly. The generic delivery-mode instructions do not apply here and are deliberately absent from this brief, so nothing in this brief releases you before this contract is satisfied.
-This contract is the project'"'"'s single source of truth, injected here so it reaches you regardless of how this task was dispatched - do not go looking for it elsewhere, and do not fall back to the default no-mistakes-to-PR pipeline unless this section tells you to.'
+  DOD_ANCHOR='Definition of done - MANDATORY custom delivery workflow'
+  # The precedence sentence is load-bearing, not decoration: rule 1 is still
+  # derived from the delivery mode, so a local-only project carrying a custom
+  # flow reads "never push and never open a PR" next to a flow that opens a
+  # draft PR. Never claim the generic instructions are absent - say which one
+  # wins, so that conflict resolves in the flow's favor instead of stalling.
+  FLOW_LEAD="# $DOD_ANCHOR
+This project ships through a custom delivery workflow, and the contract in this section is this task's only definition of done.
+Follow it exactly, and do not fall back to the default no-mistakes-to-PR pipeline unless this section tells you to.
+This section WINS over every other instruction in this brief: where any delivery-mode, branch, push, PR, or completion instruction elsewhere here disagrees with this contract, this contract decides.
+This contract is the project's single source of truth, injected here so it reaches you regardless of how this task was dispatched - do not go looking for it elsewhere."
   # Status-protocol bridge only: it wires the flow's own endpoint to rule 5's
   # reporting states without restating or reinterpreting any of the flow's steps.
+  # It is a subsection of the heading above so the brief's only `done:` gate
+  # lives under the section rule 5 points at through $DOD_ANCHOR.
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown, and only the '"$PAUSED_VERB"' break-out interpolates.
-  FLOW_TAIL='# Reporting completion
+  FLOW_TAIL='## Reporting completion
 Committing the change is not this task'"'"'s completion gate; the workflow above owns that gate.
 Carry that workflow through to the point where it hands the work off, then report that point per rule 5: `done: {summary}` when it leaves nothing further for you to do, or `'"$PAUSED_VERB"': {why}` while it waits on a review or deploy you must return to.
 Never report completion merely because the change is committed.'
-  DOD=$(printf '%s\n\n%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY" "$FLOW_TAIL")
+  if [ -n "$NM_INIT_LINE" ]; then
+    # A custom flow may still run the pipeline (Setup also runs `no-mistakes
+    # doctor` in this mode), so the pipeline-ownership and authority rules ride
+    # along as their own subsection. They constrain how a run is driven and
+    # never redefine the completion gate the flow above owns.
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown.
+    FLOW_PIPELINE_LEAD='## Validation pipeline rules
+These bind you whenever a step of the workflow above runs the `no-mistakes` pipeline; they govern how you drive that run and never move the completion gate the workflow above owns.'
+    DOD=$(printf '%s\n\n%s\n\n%s\n%s\n\n%s' \
+      "$FLOW_LEAD" "$FLOW_BODY" "$FLOW_PIPELINE_LEAD" "$NM_GUARDRAILS" "$FLOW_TAIL")
+  else
+    DOD=$(printf '%s\n\n%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY" "$FLOW_TAIL")
+  fi
 fi
 
 # Setup section. A fresh ship dispatch lands in a clean disposable worktree; a
@@ -501,7 +544,7 @@ $RULE1
    needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
    firstmate reads your pane for that.
    A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
-   turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
+   turn after it; continue the same stage until a defined \`done:\` gate under $DOD_ANCHOR.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
