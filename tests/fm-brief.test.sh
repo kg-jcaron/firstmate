@@ -841,14 +841,19 @@ test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
         "custom-flow brief dropped the prohibition on hand-fixing an active run"
       assert_grep "Avoid \`--yes\`" "$brief" \
         "custom-flow brief dropped the --yes prohibition that protects captain authority"
-      # The guardrails only bind if something starts a run: the generic
-      # Definition of done this replaced held the only instruction that ever
-      # did, so a note silent about validation would otherwise run
-      # `no-mistakes doctor` in Setup and then never validate at all.
-      assert_grep "run \`/no-mistakes\` at the workflow's validation step" "$brief" \
-        "custom-flow brief dropped the instruction that starts the validation pipeline"
-      assert_grep "unless the workflow above puts its own validation in that place" "$brief" \
-        "the pipeline trigger does not defer to a flow that replaces or forbids the pipeline"
+      # The workflow alone decides whether a run happens. An affirmative
+      # "run it at the validation step" sentence emitted after the flow is the
+      # instruction-ordering shape this whole change removes, and every real
+      # note declines the pipeline, so the rules must bind conditionally and
+      # start nothing.
+      assert_grep "bind you only where a step of the workflow above has you run the no-mistakes pipeline" "$brief" \
+        "the pipeline rules no longer bind conditionally on the workflow's own choice"
+      assert_grep "this task has no pipeline run and you do not start one" "$brief" \
+        "a custom-flow brief no longer tells the crewmate to start no pipeline of its own"
+      assert_no_grep "run \`/no-mistakes\`" "$brief" \
+        "a custom-flow brief instructs a pipeline run its workflow never asked for"
+      assert_no_grep "default validation" "$brief" \
+        "a custom-flow brief still makes the pipeline the task's default validation"
     else
       assert_no_grep "## Validation pipeline rules" "$brief" \
         "$mode custom-flow brief carries pipeline rules for a mode with no pipeline"
@@ -872,13 +877,18 @@ test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
 # heading it happens to look for would report coverage it does not have.
 # Fenced blocks are skipped for the same reason bin/fm-brief.sh skips them: a
 # shell comment inside a fence is not a markdown heading and closes nothing.
+# An `===` underline over a text line is a top-level heading too, so the guard
+# tracks the previous line and fails on that shape as well - checking only `^# `
+# would pass on a brief an underline-style note had already broken.
 assert_gate_under_anchor() {
   awk -v anchor="# $2" '
-    /^[ \t]*(```|~~~)/ { fence = !fence; next }
+    /^[ \t]*(```|~~~)/ { fence = !fence; prev = ""; next }
     fence { next }
-    $0 == anchor { seen = 1; next }
+    $0 == anchor { seen = 1; prev = ""; next }
     seen && /^# / { exit 1 }
+    seen && prev != "" && /^[ \t]*=+[ \t]*$/ { exit 1 }
     seen && $0 == "## Reporting completion" { found = 1; exit 0 }
+    { prev = ($0 ~ /^[ \t]*$/) ? "" : $0 }
     END { if (!seen || !found) exit 1 }
   ' "$1" || fail "$3"
 }
@@ -981,6 +991,70 @@ EOF
   pass "fm-brief.sh: a note carrying its own headings still nests under the anchor"
 }
 
+# Nothing constrains a captain-authored note to `#` headings, and an underline
+# (setext) heading closes the anchor section exactly as an unprefixed `#` line
+# does, so demoting only ATX headings would re-open this defect for the next note
+# written in that style. The note body must otherwise survive untouched, so this
+# fixture also carries a list, an indented continuation, a fenced shell comment,
+# and a trailing horizontal rule that must NOT be read as a heading underline.
+test_custom_flow_note_with_underline_headings_keeps_the_gate_under_the_anchor() {
+  local home id brief anchor
+  home="$TMP_ROOT/flow-note-underline-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-04)\n' > "$home/data/projects.md"
+  cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+flowproj custom delivery workflow
+================================
+
+flowproj ships through this flow, not the default pipeline.
+
+Flow
+----
+
+1. Open the DRAFT PR, then present the local preview.
+   - keep the PR in draft until stage-verified
+2. Merge to `stage_builds` and watch the deploy:
+
+```sh
+# not a heading: a shell comment inside a fence
+git push
+```
+
+Say "on stage" only once the deploy is green.
+
+---
+EOF
+  id="brief-flow-note-underline"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief with an underline-headed note was not scaffolded"
+  anchor="Definition of done - MANDATORY custom delivery workflow"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "an underline-style note heading stranded the \`done:\` gate outside the section rule 5 names"
+  assert_one_dod "$brief" "custom-flow brief with an underline-headed note"
+  # The underline headings are rewritten in `#` form at the demoted depth, so no
+  # bare underline survives to close the section.
+  assert_line "## flowproj custom delivery workflow" "$brief" \
+    "the note's underline-style top-level heading was not demoted under the Definition of done"
+  assert_line "### Flow" "$brief" \
+    "the note's underline-style section heading was not demoted"
+  assert_no_line "================================" "$brief" \
+    "the note's top-level heading underline survived and still closes the Definition of done section"
+  assert_no_line "flowproj custom delivery workflow" "$brief" \
+    "the note's heading text was left as bare prose above its underline"
+  # Everything that is not a heading is untouched, including the list, the
+  # indented continuation, the fenced shell comment, and the trailing rule.
+  assert_line "1. Open the DRAFT PR, then present the local preview." "$brief" \
+    "the underline-headed note lost its flow steps"
+  assert_line "   - keep the PR in draft until stage-verified" "$brief" \
+    "an indented list continuation was rewritten while demoting headings"
+  assert_line "# not a heading: a shell comment inside a fence" "$brief" \
+    "a shell comment inside a fenced block was rewritten as if it were a heading"
+  assert_line "---" "$brief" \
+    "a trailing horizontal rule was consumed as a heading underline"
+  pass "fm-brief.sh: an underline-style note heading is demoted and never closes the anchor"
+}
+
 # The completion bridge must not send a review-ready handoff to the pause verb.
 # Rule 5 in the same brief reserves that verb for a wait that clears on its own,
 # and firstmate answers it by leaving the idle pane alone on a long recheck
@@ -1018,6 +1092,40 @@ test_custom_flow_bridge_escalates_a_human_handoff_instead_of_pausing() {
   assert_no_grep '`paused: {why}`' "$brief" \
     "the completion bridge still instructs the default pause status"
   pass "fm-brief.sh: the custom-flow bridge escalates a human handoff, never pauses on it"
+}
+
+# The generic no-mistakes gate this bridge replaces asked for
+# `done: PR {url} checks green`, and firstmate feeds that URL straight into its
+# PR-ready step. Every real custom flow opens a draft PR, so a summary-only
+# status line would drop the one structured detail firstmate acts on. The bridge
+# is mode-independent, so every custom-flow brief must carry the requirement.
+test_custom_flow_bridge_keeps_the_pr_url_on_the_status_line() {
+  local home id brief mode n
+  n=0
+  for mode in no-mistakes direct-PR local-only; do
+    n=$((n + 1))
+    home="$TMP_ROOT/flow-pr-url-home-$n"
+    mkdir -p "$home/data/project-flows"
+    printf -- '- flowproj [%s] - flow project (added 2026-08-04)\n' "$mode" > "$home/data/projects.md"
+    printf 'Push the branch and open a DRAFT PR, then present the preview.\n' \
+      > "$home/data/project-flows/flowproj.md"
+    id="brief-flow-pr-url-$n"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode custom-flow brief was not scaffolded"
+    assert_grep "$(rule1_marker "$mode" "$id")" "$brief" \
+      "$mode custom-flow brief did not resolve to the $mode delivery mode"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'name it in that status line as its full `https://...` URL' "$brief" \
+      "$mode custom-flow brief does not require the PR's full URL on the status line"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'done: PR https://.../pull/{n} {summary}' "$brief" \
+      "$mode custom-flow brief lost the worked example of a PR completion line"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'the same URL inside the `needs-decision:` line' "$brief" \
+      "$mode custom-flow brief drops the PR URL when the flow ends at a human gate"
+  done
+  pass "fm-brief.sh: the custom-flow bridge keeps a PR's full URL on the status line"
 }
 
 # Scout and secondmate scaffolds are byte-identical whether or not the project
@@ -1263,7 +1371,9 @@ test_custom_flow_states_precedence_over_mode_rules
 test_custom_flow_keeps_no_mistakes_pipeline_guardrails
 test_rule5_points_at_the_heading_holding_the_done_gate
 test_custom_flow_note_with_its_own_headings_keeps_the_gate_under_the_anchor
+test_custom_flow_note_with_underline_headings_keeps_the_gate_under_the_anchor
 test_custom_flow_bridge_escalates_a_human_handoff_instead_of_pausing
+test_custom_flow_bridge_keeps_the_pr_url_on_the_status_line
 test_custom_flow_note_leaves_scout_and_secondmate_briefs_byte_identical
 test_no_custom_flow_note_scaffolds_unchanged
 test_empty_custom_flow_note_is_not_a_marker

@@ -52,8 +52,8 @@ Record that workflow in a fleet-private note at `data/project-flows/<project-nam
 This is the single source of truth for the project's custom flow.
 When such a note exists, its full contract becomes the Definition of done of every ship brief for that project and `bin/fm-brief.sh` emits no generic delivery-mode one alongside it, while `bin/fm-spawn.sh` prints a loud dispatch reminder; both are driven by the note on disk (`bin/fm-project-flow-lib.sh`) so the contract reaches the crewmate regardless of how the session started - do not rely on a prose reminder in `data/learnings.md`, which a `/bearings` or resumed session never loads.
 Because the note is the crewmate's only completion contract, it must carry its own end-to-end flow through to the point where the work is handed off, and never assume the generic pipeline fills a gap.
-For a `no-mistakes` project the brief still tells the crewmate to run the pipeline unless the note puts its own validation in that place or says not to run it, so a note that skips the pipeline must say so rather than staying silent.
-Use whatever headings read best; the scaffold demotes them one level as it injects the note, so the note never closes the brief section that holds the completion gate.
+The brief never tells the crewmate to run the no-mistakes pipeline whatever mode the project resolves to, so a flow that does include a pipeline run must name that step itself; the brief only carries the rules that bind an active run.
+Use whatever headings read best, `#` or underline style; the scaffold demotes them one level as it injects the note, so the note never closes the brief section that holds the completion gate.
 Keep the canonical contract in the note and leave only a one-line pointer wherever it used to live, so the injected brief and the human-readable record never drift.
 Write the note in inspect-then-update style like the other curated `data/` records, and update it whenever the captain changes the flow.
 See [docs/configuration.md](../../../docs/configuration.md) for the convention and the header of `bin/fm-project-flow-lib.sh` for the exact path and gating.

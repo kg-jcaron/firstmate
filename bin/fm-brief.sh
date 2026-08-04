@@ -429,7 +429,7 @@ esac
 DOD=${DOD%$'\n'}
 
 # fm_brief_demote_headings - read a note body on stdin and print it with every
-# ATX heading pushed one level deeper.
+# heading pushed one level deeper.
 #
 # The injected note becomes a subsection of the scaffold-owned Definition of done
 # heading, so it must not carry a heading that CLOSES that section. Every real
@@ -438,13 +438,36 @@ DOD=${DOD%$'\n'}
 # gate then lands under the note's heading instead of under the heading rule 5
 # names. Demoting makes the anchor genuinely contain the gate for any note shape,
 # without touching the captain's file on disk.
-# Fenced blocks are skipped so a shell comment inside a fence is never mistaken
-# for a heading, and H6 is the floor because markdown has no H7.
+# Underline (setext) headings are demoted too, rewritten in `#` form at the
+# demoted depth: an `===` underline is an H1 and would close the anchor section
+# exactly as an unprefixed `#` line does, and nothing constrains a note the
+# captain authors to one heading style.
+# Fenced blocks and a leading YAML front-matter block are passed through
+# untouched so a shell comment inside a fence is never mistaken for a heading and
+# a front-matter delimiter is never read as an underline, and H6 is the floor
+# because markdown has no H7.
 fm_brief_demote_headings() {
   awk '
-    /^[ \t]*(```|~~~)/ { fence = !fence }
-    !fence && /^#+ / && index($0, " ") <= 6 { sub(/^#/, "##") }
-    { print }
+    function flush() { if (held) { print hold; held = 0 } }
+    function setext(hashes,   text) {
+      text = hold
+      sub(/^[ \t]+/, "", text)
+      sub(/[ \t]+$/, "", text)
+      printf "%s %s\n", hashes, text
+      held = 0
+    }
+    NR == 1 && /^---[ \t]*$/ { front = 1; print; next }
+    front { if (/^(---|\.\.\.)[ \t]*$/) front = 0; print; next }
+    /^[ \t]*(```|~~~)/ { flush(); fence = !fence; print; next }
+    fence { flush(); print; next }
+    held && /^[ \t]*=+[ \t]*$/ { setext("##"); next }
+    held && /^[ \t]*-+[ \t]*$/ { setext("###"); next }
+    { flush() }
+    /^#+ / && index($0, " ") <= 6 { sub(/^#/, "##"); print; next }
+    /^[ \t]*$/ || /^[ \t]*#/ { print; next }
+    /^[ \t]*([-*+>|]|[0-9]+[.)])([ \t]|$)/ || /^([ ]{4}|\t)/ { print; next }
+    { hold = $0; held = 1; next }
+    END { flush() }
   '
 }
 
@@ -469,7 +492,7 @@ if FLOW_NOTE=$(fm_project_flow_note "$DATA" "$REPO"); then
   # wins, so that conflict resolves in the flow's favor instead of stalling.
   FLOW_LEAD="# $DOD_ANCHOR
 This project ships through a custom delivery workflow, and the contract in this section is this task's only definition of done.
-Follow it exactly, and do not fall back to the default no-mistakes-to-PR pipeline unless this section tells you to.
+Follow it exactly, and do not fall back to the default no-mistakes-to-PR pipeline.
 This section WINS over every other instruction in this brief: where any delivery-mode, branch, push, PR, or completion instruction elsewhere here disagrees with this contract, this contract decides.
 This contract is the project's single source of truth, injected here so it reaches you regardless of how this task was dispatched - do not go looking for it elsewhere."
   # Status-protocol bridge only: it wires the flow's own endpoint to rule 5's
@@ -483,6 +506,10 @@ This contract is the project's single source of truth, injected here so it reach
   # that way never reaches the captain. `needs-decision:` is the verb that means
   # a human must act, so the bridge names it for the handoff and keeps the pause
   # verb for a genuinely self-clearing wait such as a running deploy.
+  # A flow that opens a PR must still surface its URL on the status line: the
+  # generic no-mistakes gate this replaces asked for `done: PR {url} checks
+  # green`, and firstmate feeds that URL straight into its PR-ready step, so a
+  # summary-only line leaves it hunting through the pane for the link.
   # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown, and only the '"$PAUSED_VERB"' break-outs interpolate.
   FLOW_TAIL='## Reporting completion
 Committing the change is not this task'"'"'s completion gate; the workflow above owns that gate.
@@ -490,22 +517,24 @@ Carry that workflow through to the point where it hands the work off, then repor
 Append `done: {summary}` when the workflow leaves nothing further for you to do.
 Append `needs-decision: {what firstmate or the captain must decide}` when it hands off to a review, approval, or sign-off that will not clear on its own - a human has to act, so never report that handoff as `'"$PAUSED_VERB"':`.
 Append `'"$PAUSED_VERB"': {why}` only for a bounded wait you expect to clear by itself and must come back to, such as a deploy run in progress.
+Whenever the workflow has opened a PR by then, name it in that status line as its full `https://...` URL - `done: PR https://.../pull/{n} {summary}`, or the same URL inside the `needs-decision:` line - because firstmate acts on that URL directly.
 Never report completion merely because the change is committed.'
   if [ -n "$NM_INIT_LINE" ]; then
     # A custom flow may still run the pipeline (Setup also runs `no-mistakes
     # doctor` in this mode), so the pipeline-ownership and authority rules ride
     # along as their own subsection. They constrain how a run is driven and
     # never redefine the completion gate the flow above owns.
-    # The generic Definition of done this replaces carried the ONLY instruction
-    # that ever started a run, so this section restates the trigger: a note that
-    # is silent about validation would otherwise leave a no-mistakes-mode project
-    # running `no-mistakes doctor` in Setup and then never validating at all. It
-    # stays deferential to the flow, because a note may replace or forbid the
-    # pipeline and the precedence rule above already makes the flow win.
+    # The workflow alone decides whether a run happens: the projects that carry a
+    # note all resolve to no-mistakes mode and every one of their notes declines
+    # the pipeline as redundant, so an affirmative "run it at the validation step"
+    # sentence here would contradict the flow it follows - the same
+    # instruction-ordering shape the custom Definition of done exists to remove.
+    # These rules are therefore conditional on the workflow's own choice, and a
+    # per-task pipeline run stays an explicit instruction firstmate sends.
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown.
     FLOW_PIPELINE_LEAD='## Validation pipeline rules
-This project'"'"'s registered delivery mode is **no-mistakes**, so the pipeline is this task'"'"'s default validation: run `/no-mistakes` at the workflow'"'"'s validation step unless the workflow above puts its own validation in that place or tells you not to run the pipeline.
-The rules below bind you whenever that run is active; they govern how you drive it and never move the completion gate the workflow above owns.'
+These rules bind you only where a step of the workflow above has you run the no-mistakes pipeline; where it does not, this task has no pipeline run and you do not start one.
+When such a run is active they govern how you drive it, and they never move the completion gate the workflow above owns.'
     DOD=$(printf '%s\n\n%s\n\n%s\n%s\n\n%s' \
       "$FLOW_LEAD" "$FLOW_BODY" "$FLOW_PIPELINE_LEAD" "$NM_GUARDRAILS" "$FLOW_TAIL")
   else
