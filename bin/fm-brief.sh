@@ -59,8 +59,12 @@
 # a run is driven rather than when the task is done. It never tells the crewmate
 # to start a run: those rules bind only where a step of the note's own workflow
 # runs the pipeline, so a flow that includes a pipeline run must name that step
-# itself. A project with no note carries only the generic delivery-mode
-# Definition of done.
+# itself. Only the mode's COMPLETION gate is replaced: the mode's MECHANICAL
+# branch-and-handover rules (local-only's clean fast-forward and rebase, and each
+# mode's merge-authority handover where it has one) still reach the crewmate as
+# their own subsection, which states that it decides nothing about completion.
+# A project with no note carries only the generic delivery-mode Definition of
+# done.
 # Ship and scout briefs both forbid a co-author trailer naming an AI model or
 # assistant on any commit, while human co-author trailers stay allowed.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
@@ -380,31 +384,56 @@ Two firstmate-specific rules layer on top of that guidance:
 EOF
 NM_GUARDRAILS=${NM_GUARDRAILS%$'\n'}
 
+# MODE_MECHANICS is the single owner of each delivery mode's MECHANICAL rules:
+# how the branch must be shaped and who lands it once the crewmate hands it over.
+# They are deliberately separate from the mode's COMPLETION gate (when the task
+# is done), because a project's custom delivery workflow replaces the completion
+# gate and only the completion gate. Both the generic Definition of done below
+# and the custom-flow injection compose these same variables, so a mechanical
+# rule can never be lost by replacing a completion contract - the shape that has
+# already cost a custom-flow brief its precedence clause, its pipeline-ownership
+# rules, and local-only's fast-forward rule in turn. Dropping the last of those
+# was concrete, not cosmetic: bin/fm-merge-local.sh only ever fast-forwards and
+# refuses a diverged branch, so a brief that never asked for a rebase lands the
+# work in exactly the manual steer the one-Definition-of-done change removes.
+MODE_MECHANICS=""
+
 case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+    MECH_MERGE='The configured merge authority decides whether to merge the PR; firstmate relays the outcome.'
+    MODE_MECHANICS=$MECH_MERGE
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
-Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+Do NOT run /no-mistakes.
+$MECH_MERGE
 EOF
     ;;
   local-only)
     SETUP2=""
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks around `main` are literal brief-text markdown, not a command substitution.
+    MECH_BRANCH='Keep your branch a clean fast-forward onto the current default branch - if `main` has advanced, rebase onto it so the eventual merge stays a fast-forward.'
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks around `main` are literal brief-text markdown, not a command substitution.
+    MECH_MERGE='The configured merge authority approves the ready branch, then firstmate merges it into local `main` through the guarded fast-forward path.'
+    MODE_MECHANICS="$MECH_BRANCH
+$MECH_MERGE"
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 This project ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
-Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
+$MECH_BRANCH
 When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
-The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
+$MECH_MERGE
 EOF
     ;;
-  *)  # no-mistakes (default)
+  *)  # no-mistakes (default). Its own non-completion material is
+      # NM_GUARDRAILS, which already reaches a custom-flow brief as its own
+      # subsection, so this mode contributes no branch or handover mechanics.
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown that must reach the reading agent verbatim, not run as a command at scaffold time.
     NM_INIT_LINE='Run `no-mistakes doctor`; if it reports the repo is not initialized here, run `no-mistakes init`.'
     SETUP2="
@@ -448,6 +477,17 @@ DOD=${DOD%$'\n'}
 # untouched so a shell comment inside a fence is never mistaken for a heading and
 # a front-matter delimiter is never read as an underline, and H6 is the floor
 # because markdown has no H7.
+# Front matter is recognized only when the whole shape is present: a leading
+# `---`, a YAML key on the next line, and a real `---`/`...` terminator later in
+# the file. Treating any leading `---` as an opener silently disabled demotion
+# for the entire note whenever the captain opened one with a horizontal rule or
+# left a block unterminated, which put the note's own top-level heading back in
+# the position that closes the anchor section. The buffered two-pass form is what
+# makes the terminator knowable before the first line is emitted.
+# An ATX heading indented one to three spaces is a heading in CommonMark, so it
+# is demoted (and its indent normalized) rather than escaping through the
+# passthrough rules at its original level; four spaces is an indented code block
+# and a `#` with no following space is a hashtag, and both still pass through.
 fm_brief_demote_headings() {
   awk '
     function flush() { if (held) { print hold; held = 0 } }
@@ -458,18 +498,33 @@ fm_brief_demote_headings() {
       printf "%s %s\n", hashes, text
       held = 0
     }
-    NR == 1 && /^---[ \t]*$/ { front = 1; print; next }
-    front { if (/^(---|\.\.\.)[ \t]*$/) front = 0; print; next }
-    /^[ \t]*(```|~~~)/ { flush(); fence = !fence; print; next }
-    fence { flush(); print; next }
-    held && /^[ \t]*=+[ \t]*$/ { setext("##"); next }
-    held && /^[ \t]*-+[ \t]*$/ { setext("###"); next }
-    { flush() }
-    /^#+ / && index($0, " ") <= 6 { sub(/^#/, "##"); print; next }
-    /^[ \t]*$/ || /^[ \t]*#/ { print; next }
-    /^[ \t]*([-*+>|]|[0-9]+[.)])([ \t]|$)/ || /^([ ]{4}|\t)/ { print; next }
-    { hold = $0; held = 1; next }
-    END { flush() }
+    { line[NR] = $0 }
+    END {
+      front_end = 0
+      if (NR >= 3 && line[1] ~ /^---[ \t]*$/ && line[2] ~ /^[A-Za-z_][A-Za-z0-9_.-]*:([ \t]|$)/) {
+        for (i = 3; i <= NR; i++) {
+          if (line[i] ~ /^(---|\.\.\.)[ \t]*$/) { front_end = i; break }
+        }
+      }
+      for (i = 1; i <= NR; i++) {
+        text = line[i]
+        if (i <= front_end) { print text; continue }
+        if (text ~ /^[ \t]*(```|~~~)/) { flush(); fence = !fence; print text; continue }
+        if (fence) { flush(); print text; continue }
+        if (held && text ~ /^[ \t]*=+[ \t]*$/) { setext("##"); continue }
+        if (held && text ~ /^[ \t]*-+[ \t]*$/) { setext("###"); continue }
+        flush()
+        atx = text
+        indent = 0
+        while (indent < 3 && substr(atx, 1, 1) == " ") { atx = substr(atx, 2); indent++ }
+        if (atx ~ /^#+ / && index(atx, " ") <= 6) { sub(/^#/, "##", atx); print atx; continue }
+        if (text ~ /^[ \t]*$/ || text ~ /^[ \t]*#/) { print text; continue }
+        if (text ~ /^[ \t]*([-*+>|]|[0-9]+[.)])([ \t]|$)/ || text ~ /^([ ]{4}|\t)/) { print text; continue }
+        hold = text
+        held = 1
+      }
+      flush()
+    }
   '
 }
 
@@ -521,27 +576,39 @@ Append `needs-decision: {what firstmate or the captain must decide}` when it han
 Append `'"$PAUSED_VERB"': {why}` only for a bounded wait you expect to clear by itself and must come back to, such as a deploy run in progress.
 Whenever the workflow has opened a PR by then, name it in that status line as its full `https://...` URL - `done: PR https://.../pull/{n} {summary}`, or the same URL inside the `needs-decision:` line - because firstmate acts on that URL directly.
 Never report completion merely because the change is committed.'
+  DOD=$(printf '%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY")
   if [ -n "$NM_INIT_LINE" ]; then
     # A custom flow may still run the pipeline (Setup also runs `no-mistakes
     # doctor` in this mode), so the pipeline-ownership and authority rules ride
     # along as their own subsection. They constrain how a run is driven and
     # never redefine the completion gate the flow above owns.
-    # The workflow alone decides whether a run happens: the projects that carry a
-    # note all resolve to no-mistakes mode and every one of their notes declines
-    # the pipeline as redundant, so an affirmative "run it at the validation step"
-    # sentence here would contradict the flow it follows - the same
+    # The workflow alone decides whether a run happens, so these rules are
+    # conditional on its own choice and start nothing: an affirmative "run it at
+    # the validation step" sentence emitted after a flow that does not ask for a
+    # run would contradict the very contract it follows - the same
     # instruction-ordering shape the custom Definition of done exists to remove.
-    # These rules are therefore conditional on the workflow's own choice, and a
-    # per-task pipeline run stays an explicit instruction firstmate sends.
+    # A flow that needs a pipeline run therefore names that step itself, and a
+    # per-task run stays an explicit instruction firstmate sends.
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown.
     FLOW_PIPELINE_LEAD='## Validation pipeline rules
 These rules bind you only where a step of the workflow above has you run the no-mistakes pipeline; where it does not, this task has no pipeline run and you do not start one.
 When such a run is active they govern how you drive it, and they never move the completion gate the workflow above owns.'
-    DOD=$(printf '%s\n\n%s\n\n%s\n%s\n\n%s' \
-      "$FLOW_LEAD" "$FLOW_BODY" "$FLOW_PIPELINE_LEAD" "$NM_GUARDRAILS" "$FLOW_TAIL")
-  else
-    DOD=$(printf '%s\n\n%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY" "$FLOW_TAIL")
+    DOD=$(printf '%s\n\n%s\n%s' "$DOD" "$FLOW_PIPELINE_LEAD" "$NM_GUARDRAILS")
   fi
+  if [ -n "$MODE_MECHANICS" ]; then
+    # The delivery mode's MECHANICAL rules survive the replaced completion gate,
+    # because they say how the branch must be shaped and who lands it, not when
+    # the task is done. Omitting them relocated the manual steer rather than
+    # removing it: a local-only brief with no fast-forward rule produces the
+    # diverged branch bin/fm-merge-local.sh refuses. The subsection states its own
+    # limit so it can never be read as a second completion contract, and it adds
+    # no precedence clause - the lead above already resolves every conflict.
+    FLOW_MECHANICS="## Branch and handover mechanics
+These shape the branch and its handover; none of them decides when the task is done, because the workflow above remains this task's only definition of done.
+$MODE_MECHANICS"
+    DOD=$(printf '%s\n\n%s' "$DOD" "$FLOW_MECHANICS")
+  fi
+  DOD=$(printf '%s\n\n%s' "$DOD" "$FLOW_TAIL")
 fi
 
 # Setup section. A fresh ship dispatch lands in a clean disposable worktree; a

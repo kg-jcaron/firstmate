@@ -815,6 +815,94 @@ test_custom_flow_states_precedence_over_mode_rules() {
   pass "fm-brief.sh: a custom flow declares precedence over the mode-derived rules"
 }
 
+# dod_section <file>: the brief's Definition of done section. It is always the
+# last section, so everything from its heading to end of file, under either the
+# generic heading or the custom-flow rename.
+dod_section() {
+  awk '/^# Definition of done/ { inside = 1 } inside' "$1"
+}
+
+# The affirmative pipeline trigger removed in d5aa5bc must not return in ANY
+# spelling. A fixed-string guard on the sentence that happened to be removed is
+# not that invariant: a reworded, unbackticked reinstatement such as "run
+# /no-mistakes at the workflow validation step" sails straight past it, and the
+# unbackticked form is already the house style elsewhere in the same scaffold.
+# So instead of pinning one wording, this partitions every line of the injected
+# section that mentions the pipeline at all against the declared set of sentences
+# that only CONSTRAIN a run; any other line, however worded, is reported.
+# The captain's note body is deliberately out of scope, because a flow is free to
+# name its own pipeline step - assert_no_pipeline_trigger therefore requires the
+# fixture note to mention neither the pipeline nor no-mistakes, so scaffold text
+# is the only thing this partition can see.
+declared_pipeline_lines() {
+  cat <<'EOF'
+Follow it exactly, and do not fall back to the default no-mistakes-to-PR pipeline.
+## Validation pipeline rules
+These rules bind you only where a step of the workflow above has you run the no-mistakes pipeline; where it does not, this task has no pipeline run and you do not start one.
+You drive no-mistakes by responding to its gates, not by implementing fixes.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
+Do not hand-edit, commit, abort, or restart while a run is active, and do not fix findings yourself - the pipeline applies every fix.
+  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
+EOF
+}
+
+# undeclared_pipeline_lines <brief>: print every line of the injected Definition
+# of done that references the pipeline and is not one of the declared constraining
+# sentences. Empty output means the brief starts no pipeline run of its own.
+undeclared_pipeline_lines() {
+  local brief=$1 declared line
+  declared=$(declared_pipeline_lines)
+  while IFS= read -r line; do
+    case "$line" in
+      *no-mistakes*|*pipeline*|*Pipeline*) ;;
+      *) continue ;;
+    esac
+    printf '%s\n' "$declared" | grep -Fxq -- "$line" && continue
+    printf '%s\n' "$line"
+  done < <(dod_section "$brief")
+}
+
+assert_no_pipeline_trigger() {
+  local brief=$1 note=$2 label=$3 undeclared
+  if grep -qE 'no-mistakes|pipeline|Pipeline' "$note"; then
+    fail "$label: the fixture note mentions the pipeline, so this guard could not tell scaffold text from captain content"
+  fi
+  undeclared=$(undeclared_pipeline_lines "$brief")
+  [ -z "$undeclared" ] \
+    || fail "$label instructs a pipeline run its workflow never asked for:"$'\n'"$undeclared"
+}
+
+# Control for assert_no_pipeline_trigger: the partition must reject the exact
+# sentence removed in d5aa5bc AND rewordings of it that no fixed-string guard
+# would catch. Without this the assertions in the tests below could be vacuous.
+test_pipeline_trigger_guard_rejects_every_reinstated_trigger() {
+  local home id brief mutated reinstated
+  home="$TMP_ROOT/flow-trigger-guard-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-06)\n' > "$home/data/projects.md"
+  printf 'Open the draft PR, then present the preview.\n' > "$home/data/project-flows/flowproj.md"
+  id="brief-flow-trigger-guard"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief was not scaffolded"
+  assert_no_pipeline_trigger "$brief" "$home/data/project-flows/flowproj.md" \
+    "the no-mistakes custom-flow brief"
+  mutated="$TMP_ROOT/flow-trigger-guard-mutated.md"
+  # shellcheck disable=SC2016  # These are literal brief-text reinstatements being rejected, not commands.
+  for reinstated in \
+    'This project'"'"'s registered delivery mode is **no-mistakes**, so the pipeline is this task'"'"'s default validation: run `/no-mistakes` at the workflow'"'"'s validation step unless the workflow above puts its own validation in that place or tells you not to run the pipeline.' \
+    'Run /no-mistakes at the workflow validation step.' \
+    'Invoke the pipeline to validate this task before the preview.' \
+    'The no-mistakes pipeline is this task'"'"'s validation step.'
+  do
+    cp "$brief" "$mutated"
+    printf '%s\n' "$reinstated" >> "$mutated"
+    [ -n "$(undeclared_pipeline_lines "$mutated")" ] \
+      || fail "the pipeline-trigger partition accepted a reinstated trigger: $reinstated"
+  done
+  pass "fm-brief.sh: the pipeline-trigger guard rejects a reinstated trigger in any wording"
+}
+
 # The pipeline-ownership and authority rules are not completion gates, so
 # replacing the generic Definition of done must not drop them: a custom-flow
 # project in no-mistakes mode still runs `no-mistakes doctor` in Setup and may
@@ -843,27 +931,174 @@ test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
         "custom-flow brief dropped the --yes prohibition that protects captain authority"
       # The workflow alone decides whether a run happens. An affirmative
       # "run it at the validation step" sentence emitted after the flow is the
-      # instruction-ordering shape this whole change removes, and every real
-      # note declines the pipeline, so the rules must bind conditionally and
-      # start nothing.
+      # instruction-ordering shape this whole change removes, so the rules must
+      # bind conditionally and start nothing.
       assert_grep "bind you only where a step of the workflow above has you run the no-mistakes pipeline" "$brief" \
         "the pipeline rules no longer bind conditionally on the workflow's own choice"
       assert_grep "this task has no pipeline run and you do not start one" "$brief" \
         "a custom-flow brief no longer tells the crewmate to start no pipeline of its own"
-      assert_no_grep "run \`/no-mistakes\`" "$brief" \
-        "a custom-flow brief instructs a pipeline run its workflow never asked for"
-      assert_no_grep "default validation" "$brief" \
-        "a custom-flow brief still makes the pipeline the task's default validation"
     else
       assert_no_grep "## Validation pipeline rules" "$brief" \
         "$mode custom-flow brief carries pipeline rules for a mode with no pipeline"
       assert_no_grep "Avoid \`--yes\`" "$brief" \
         "$mode custom-flow brief carries the --yes rule for a mode with no pipeline"
-      assert_no_grep "run \`/no-mistakes\`" "$brief" \
-        "$mode custom-flow brief starts a pipeline the mode does not use"
     fi
+    # Spelling-independent for every mode: no affirmative instruction to START a
+    # run may survive, whichever words a future edit reaches for.
+    assert_no_pipeline_trigger "$brief" "$home/data/project-flows/flowproj.md" \
+      "$mode custom-flow brief"
   done
   pass "fm-brief.sh: no-mistakes pipeline rules survive a custom Definition of done"
+}
+
+# A custom flow replaces the delivery mode's COMPLETION gate and nothing else.
+# Three rounds of review each lost a different mode-derived rule to that
+# replacement - first the precedence clause, then the pipeline-ownership rules,
+# then local-only's clean-fast-forward rule, whose absence produces exactly the
+# diverged branch bin/fm-merge-local.sh refuses - so the guard below is a
+# partition rather than a check on any one sentence.
+# completion_gate_lines <mode> <id>: the exact generic Definition-of-done lines a
+# custom flow is ALLOWED to drop, because each one tells the crewmate when the
+# task is complete. Declaring the replaceable lines instead of the surviving ones
+# is what makes this structural: a mechanical rule added to a mode later fails
+# here until it is either carried into the custom-flow brief or deliberately
+# declared a completion gate.
+completion_gate_lines() {
+  case "$1" in
+    direct-PR)
+      cat <<EOF
+# Definition of done
+This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+The task is complete only when committed on your branch.
+When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+Do NOT run /no-mistakes.
+EOF
+      ;;
+    local-only)
+      cat <<EOF
+# Definition of done
+This project ships **local-only**: no remote, no PR, no pipeline.
+The task is complete only when committed on your branch \`fm/$2\`. Do NOT push, do NOT open a PR, do NOT merge.
+When it is implemented and committed, append \`done: ready in branch fm/$2\` to the status file and stop.
+EOF
+      ;;
+    *)
+      cat <<EOF
+# Definition of done
+The task is complete only when committed on your branch.
+When you believe it is complete, append \`done: {summary}\` to the status file and stop.
+Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+EOF
+      ;;
+  esac
+}
+
+# unreplaced_mode_lines <plain-brief> <flow-brief> <mode> <id>: print every line
+# of the plain brief's Definition of done that the custom-flow brief dropped and
+# that is NOT a declared completion-gate line. Empty output means the flow
+# replaced exactly the completion gate.
+unreplaced_mode_lines() {
+  local plain=$1 flow=$2 allow line
+  allow=$(completion_gate_lines "$3" "$4")
+  while IFS= read -r line; do
+    [ -n "${line//[[:space:]]/}" ] || continue
+    grep -Fxq -- "$line" "$flow" && continue
+    printf '%s\n' "$allow" | grep -Fxq -- "$line" && continue
+    printf '%s\n' "$line"
+  done < <(dod_section "$plain")
+}
+
+# mechanics_section <file>: the body of the injected branch-and-handover
+# subsection, or nothing when the mode contributes no mechanics.
+mechanics_section() {
+  awk '/^## Branch and handover mechanics$/ { inside = 1; next } inside && /^## / { exit } inside' "$1"
+}
+
+test_custom_flow_keeps_mode_branch_and_handover_mechanics() {
+  local home plain_home id brief plain mode n dropped sect
+  local ff_brief="" ff_plain="" ff_id=""
+  n=0
+  for mode in no-mistakes direct-PR local-only; do
+    n=$((n + 1))
+    home="$TMP_ROOT/flow-mechanics-home-$n"
+    plain_home="$TMP_ROOT/flow-mechanics-plain-home-$n"
+    mkdir -p "$home/data/project-flows" "$plain_home/data"
+    printf -- '- proj [%s] - flow project (added 2026-08-06)\n' "$mode" > "$home/data/projects.md"
+    cp "$home/data/projects.md" "$plain_home/data/projects.md"
+    printf 'Open the draft PR, then present the preview.\n' > "$home/data/project-flows/proj.md"
+    # Same task id in both homes, so `fm/<id>` renders identically and the two
+    # Definition-of-done sections are comparable line by line.
+    id="brief-mechanics-$n"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" proj >/dev/null 2>&1
+    FM_HOME="$plain_home" "$ROOT/bin/fm-brief.sh" "$id" proj >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    plain="$plain_home/data/$id/brief.md"
+    assert_present "$brief" "$mode custom-flow brief was not scaffolded"
+    assert_present "$plain" "$mode no-flow brief was not scaffolded"
+    # Non-vacuous: both briefs really carry this mode's contract, and only the
+    # custom-flow one replaced the gate.
+    assert_grep "$(rule1_marker "$mode" "$id")" "$brief" \
+      "$mode custom-flow brief did not resolve to the $mode delivery mode"
+    assert_grep "$(generic_dod_marker "$mode")" "$plain" \
+      "$mode no-flow brief lost its own generic Definition of done"
+    assert_no_grep "$(generic_dod_marker "$mode")" "$brief" \
+      "$mode custom-flow brief kept the generic delivery-mode Definition of done"
+
+    dropped=$(unreplaced_mode_lines "$plain" "$brief" "$mode" "$id")
+    [ -z "$dropped" ] || fail \
+      "$mode custom-flow brief dropped mode-derived lines that are not completion gates:"$'\n'"$dropped"
+
+    case "$mode" in
+      direct-PR)
+        assert_grep "## Branch and handover mechanics" "$brief" \
+          "direct-PR custom-flow brief has no branch-and-handover subsection"
+        assert_line "The configured merge authority decides whether to merge the PR; firstmate relays the outcome." "$brief" \
+          "direct-PR custom-flow brief lost the merge-authority handover"
+        ;;
+      local-only)
+        assert_grep "## Branch and handover mechanics" "$brief" \
+          "local-only custom-flow brief has no branch-and-handover subsection"
+        assert_line "Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward." "$brief" \
+          "local-only custom-flow brief lost the clean-fast-forward and rebase rule bin/fm-merge-local.sh requires"
+        assert_line "The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path." "$brief" \
+          "local-only custom-flow brief lost the guarded-landing handover"
+        ff_brief=$brief
+        ff_plain=$plain
+        ff_id=$id
+        ;;
+      *)
+        assert_no_grep "## Branch and handover mechanics" "$brief" \
+          "no-mistakes mode contributes no branch or handover mechanics, so no such subsection may be emitted"
+        ;;
+    esac
+
+    # Whatever survives must never read as a second completion contract.
+    sect=$(mechanics_section "$brief")
+    if [ -n "$sect" ]; then
+      printf '%s\n' "$sect" | grep -Fq "none of them decides when the task is done" \
+        || fail "$mode branch-and-handover subsection does not disclaim deciding completion"
+      if printf '%s\n' "$sect" | grep -qE 'done:|complete only when|task is complete'; then
+        fail "$mode branch-and-handover subsection reintroduced a completion gate"
+      fi
+    fi
+    assert_one_dod "$brief" "$mode custom-flow brief with surviving mode mechanics"
+  done
+
+  # Controls: the partition above must actually fire, in both directions. A
+  # surviving mechanical rule deleted from the custom-flow brief, and a NEW
+  # mode-derived rule the injection does not carry, must each be reported -
+  # otherwise the next mode rule could vanish exactly as the fast-forward rule did.
+  local mutated_flow="$TMP_ROOT/flow-mechanics-mutated-flow.md"
+  local mutated_plain="$TMP_ROOT/flow-mechanics-mutated-plain.md"
+  grep -Fv "rebase onto it so the eventual merge stays a fast-forward" "$ff_brief" > "$mutated_flow"
+  [ -n "$(unreplaced_mode_lines "$ff_plain" "$mutated_flow" local-only "$ff_id")" ] \
+    || fail "the mechanics partition accepted a custom-flow brief with the fast-forward rule removed"
+  cp "$ff_plain" "$mutated_plain"
+  printf 'Sign every commit on your branch with the release key.\n' >> "$mutated_plain"
+  [ -n "$(unreplaced_mode_lines "$mutated_plain" "$ff_brief" local-only "$ff_id")" ] \
+    || fail "the mechanics partition accepted a new mode-derived rule missing from the custom-flow brief"
+  pass "fm-brief.sh: a custom flow replaces the mode's completion gate and keeps its mechanics"
 }
 
 # Rule 5 sends the crewmate to the section that holds this brief's `done:` gate.
@@ -1053,6 +1288,130 @@ EOF
   assert_line "---" "$brief" \
     "a trailing horizontal rule was consumed as a heading underline"
   pass "fm-brief.sh: an underline-style note heading is demoted and never closes the anchor"
+}
+
+# A leading `---` is only YAML front matter when the whole shape is there. Reading
+# any leading `---` as an opener disabled demotion for the ENTIRE note whenever
+# the captain opened one with a horizontal rule or left a block unterminated, and
+# an undemoted top-level heading closes the anchor section again - the exact
+# wrong-section resolution this change exists to stop. Each fixture below is a
+# note shape a captain could plausibly write.
+test_custom_flow_note_leading_dashes_still_demote_headings() {
+  local home id brief anchor n shape
+  home="$TMP_ROOT/flow-note-frontmatter-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-06)\n' > "$home/data/projects.md"
+  anchor="Definition of done - MANDATORY custom delivery workflow"
+  n=0
+  for shape in rule unterminated; do
+    n=$((n + 1))
+    if [ "$shape" = rule ]; then
+      # A horizontal rule above the title, closed by a second rule further down.
+      cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+---
+# flowproj custom delivery workflow
+
+## Flow
+
+1. Open the DRAFT PR, then present the local preview.
+
+---
+EOF
+    else
+      # A front-matter block the captain never terminated.
+      cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+---
+owner: captain
+# flowproj custom delivery workflow
+
+## Flow
+
+1. Open the DRAFT PR, then present the local preview.
+EOF
+    fi
+    id="brief-flow-frontmatter-$n"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$shape custom-flow brief was not scaffolded"
+    assert_gate_under_anchor "$brief" "$anchor" \
+      "a note opening with \`---\` ($shape) stranded the \`done:\` gate outside the section rule 5 names"
+    assert_line "## flowproj custom delivery workflow" "$brief" \
+      "a note opening with \`---\` ($shape) kept its top-level heading undemoted"
+    assert_line "### Flow" "$brief" \
+      "a note opening with \`---\` ($shape) kept its section heading undemoted"
+    assert_no_line "# flowproj custom delivery workflow" "$brief" \
+      "a note opening with \`---\` ($shape) still closes the Definition of done section"
+    assert_grep "Open the DRAFT PR, then present the local preview." "$brief" \
+      "the note lost its flow steps while its leading \`---\` was classified"
+    assert_one_dod "$brief" "$shape custom-flow brief"
+  done
+
+  # A real, complete front-matter block is still passed through verbatim - the
+  # delimiters must not be rewritten as headings - while the body below it demotes.
+  cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+---
+owner: captain
+updated: 2026-08-06
+---
+# flowproj custom delivery workflow
+
+1. Open the DRAFT PR, then present the local preview.
+EOF
+  id="brief-flow-frontmatter-real"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "front-matter custom-flow brief was not scaffolded"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "a note with real front matter stranded the \`done:\` gate outside the section rule 5 names"
+  assert_line "owner: captain" "$brief" \
+    "a real front-matter key was not passed through verbatim"
+  assert_line "## flowproj custom delivery workflow" "$brief" \
+    "the body below real front matter was not demoted"
+  pass "fm-brief.sh: a leading \`---\` never disables heading demotion for the note"
+}
+
+# An ATX heading indented one to three spaces is a heading in CommonMark, so it
+# must be demoted too; four spaces is an indented code block and `#tag` with no
+# following space is a hashtag, and both must still pass through untouched.
+test_custom_flow_note_indented_headings_are_demoted() {
+  local home id brief anchor
+  home="$TMP_ROOT/flow-note-indented-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-06)\n' > "$home/data/projects.md"
+  cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+  # flowproj custom delivery workflow
+
+   ## Flow
+
+1. Open the DRAFT PR, then present the local preview.
+
+    # indented four spaces: a code block, not a heading
+
+ #flowproj is a hashtag, not a heading
+
+ ###### already at the floor
+EOF
+  id="brief-flow-indented-headings"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief with indented note headings was not scaffolded"
+  anchor="Definition of done - MANDATORY custom delivery workflow"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "an indented note heading stranded the \`done:\` gate outside the section rule 5 names"
+  assert_one_dod "$brief" "custom-flow brief with indented note headings"
+  assert_line "## flowproj custom delivery workflow" "$brief" \
+    "a one-to-three-space indented top-level heading escaped demotion"
+  assert_line "### Flow" "$brief" \
+    "a one-to-three-space indented section heading escaped demotion"
+  assert_no_line "  # flowproj custom delivery workflow" "$brief" \
+    "the indented top-level heading survived and still closes the Definition of done section"
+  assert_line "    # indented four spaces: a code block, not a heading" "$brief" \
+    "a four-space indented code block was rewritten as a heading"
+  assert_line " #flowproj is a hashtag, not a heading" "$brief" \
+    "a hashtag with no space after the hashes was rewritten as a heading"
+  assert_line " ###### already at the floor" "$brief" \
+    "an H6 heading was pushed past the H6 floor markdown has no level for"
+  pass "fm-brief.sh: an indented ATX note heading is demoted, code blocks and hashtags are not"
 }
 
 # The completion bridge must not send a review-ready handoff to the pause verb.
@@ -1368,10 +1727,14 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_custom_flow_note_injected_into_ship_brief
 test_custom_flow_replaces_generic_definition_of_done
 test_custom_flow_states_precedence_over_mode_rules
+test_pipeline_trigger_guard_rejects_every_reinstated_trigger
 test_custom_flow_keeps_no_mistakes_pipeline_guardrails
+test_custom_flow_keeps_mode_branch_and_handover_mechanics
 test_rule5_points_at_the_heading_holding_the_done_gate
 test_custom_flow_note_with_its_own_headings_keeps_the_gate_under_the_anchor
 test_custom_flow_note_with_underline_headings_keeps_the_gate_under_the_anchor
+test_custom_flow_note_leading_dashes_still_demote_headings
+test_custom_flow_note_indented_headings_are_demoted
 test_custom_flow_bridge_escalates_a_human_handoff_instead_of_pausing
 test_custom_flow_bridge_keeps_the_pr_url_on_the_status_line
 test_custom_flow_note_leaves_scout_and_secondmate_briefs_byte_identical
