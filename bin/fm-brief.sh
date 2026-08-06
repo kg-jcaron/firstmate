@@ -507,6 +507,13 @@ DOD=${DOD%$'\n'}
 # same character, at least as long, with nothing but whitespace after it, because
 # a `~~~` line inside a ``` block cancels nothing and treating it as a close reads
 # the whole remainder of the note as prose while the real fence stays open.
+# Indentation decides it too, and in both directions. A delimiter carries at most
+# three spaces of indentation; a fourth space or a tab makes the line indented
+# code, so it neither opens a fence nor closes one. Accepting an over-indented
+# delimiter as a close leaves the real fence open with nothing appended to close
+# it, and reading one as an opener appends a delimiter that a renderer takes as
+# an OPENING fence - each swallows every scaffold section that follows, one in a
+# note that was already unbalanced and one in a note that was fine.
 # Front matter is recognized only when the whole shape is present AND the region
 # is bounded the way real front matter is: a leading `---`, a YAML key on the next
 # line, then a run of lines that could each be metadata, closed by a real
@@ -528,7 +535,10 @@ DOD=${DOD%$'\n'}
 # does - inside a passed-through front-matter region as readily as in the body, so
 # the same match is what keeps that region free of top-level headings too. Four
 # spaces is an indented code block and hashes followed directly by text are a
-# hashtag, and both still pass through.
+# hashtag, and both still pass through. That allowance is the same CommonMark rule
+# the fence delimiters obey, so one helper owns it for both: a heading and a fence
+# stop counting at the same column, and keeping the rule in two places is how the
+# two decisions drift apart.
 # A trailing carriage return is stripped from every line, because a CRLF note
 # otherwise defeats the underline rules - their end anchors cannot match past the
 # `\r` - and leaves the note's own underline heading standing at top level.
@@ -551,15 +561,20 @@ fm_brief_normalize_note() {
       printf "%s %s\n", hashes, text
       held = 0
     }
-    function atx(text,   n) {
+    function unindented(text,   t, n) {
+      t = text
       n = 0
-      while (n < 3 && substr(text, 1, 1) == " ") { text = substr(text, 2); n++ }
-      if (text ~ /^#+([ \t]|$)/) return text
+      while (n < 3 && substr(t, 1, 1) == " ") { t = substr(t, 2); n++ }
+      if (substr(t, 1, 1) == " " || substr(t, 1, 1) == "\t") return ""
+      return t
+    }
+    function atx(text,   t) {
+      t = unindented(text)
+      if (t ~ /^#+([ \t]|$)/) return t
       return ""
     }
     function delim(text,   t, c, n) {
-      t = text
-      sub(/^[ \t]*/, "", t)
+      t = unindented(text)
       c = substr(t, 1, 1)
       if (c != "`" && c != "~") return ""
       n = 0
@@ -571,8 +586,7 @@ fm_brief_normalize_note() {
       run = delim(text)
       if (run == "" || substr(run, 1, 1) != substr(opener, 1, 1)) return 0
       if (length(run) < length(opener)) return 0
-      t = text
-      sub(/^[ \t]*/, "", t)
+      t = unindented(text)
       return substr(t, length(run) + 1) ~ /^[ \t]*$/
     }
     { sub(/\r$/, "", $0); line[NR] = $0 }

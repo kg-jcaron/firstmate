@@ -1290,11 +1290,23 @@ test_ci_ready_token_stays_on_the_pipeline_path() {
 # whitespace after it. Toggling on either delimiter reads a `~~~` line inside a
 # ``` block as a close, which calls a still-open fence balanced - the same
 # misreading bin/fm-brief.sh has to avoid to know when it must close one.
+# Indentation is part of those rules: a delimiter carries at most three spaces, and
+# a fourth space or a tab makes the line indented code, opening and closing
+# nothing. This oracle has to read a brief the way a renderer will, so an
+# over-indented delimiter must not end a block here either - stripping arbitrary
+# leading whitespace would reproduce the very mistake the script must not make and
+# leave the guard agreeing with a broken brief.
 unfenced() {
   awk '
-    function delim(text,   t, c, n) {
+    function unindented(text,   t, n) {
       t = text
-      sub(/^[ \t]*/, "", t)
+      n = 0
+      while (n < 3 && substr(t, 1, 1) == " ") { t = substr(t, 2); n++ }
+      if (substr(t, 1, 1) == " " || substr(t, 1, 1) == "\t") return ""
+      return t
+    }
+    function delim(text,   t, c, n) {
+      t = unindented(text)
       c = substr(t, 1, 1)
       if (c != "`" && c != "~") return ""
       n = 0
@@ -1306,8 +1318,7 @@ unfenced() {
       run = delim(text)
       if (run == "" || substr(run, 1, 1) != substr(opener, 1, 1)) return 0
       if (length(run) < length(opener)) return 0
-      t = text
-      sub(/^[ \t]*/, "", t)
+      t = unindented(text)
       return substr(t, length(run) + 1) ~ /^[ \t]*$/
     }
     {
