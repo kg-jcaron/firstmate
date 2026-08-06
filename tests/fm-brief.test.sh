@@ -956,6 +956,44 @@ test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
   pass "fm-brief.sh: no-mistakes pipeline rules survive a custom Definition of done"
 }
 
+# Which briefs carry the pipeline-ownership and --yes rules must depend on the
+# resolved delivery mode, never on the Setup section's `no-mistakes doctor` line.
+# That line's job is placing a Setup list item, so using it as a stand-in for "the
+# mode is no-mistakes" means moving, dropping, or unconditioning a Setup item
+# silently changes which crewmates receive the authority guardrails - the same
+# silent-vanishing shape the mechanical/completion split exists to prevent, one
+# condition further down.
+# setup_doctor_line_misuses <script>: print every reference to that variable that
+# is not its own assignment or a Setup list item. Empty output means the two
+# concerns are independent.
+# shellcheck disable=SC2016  # single quotes are deliberate: these are grep patterns matching the script's own literal "$NM_INIT_LINE" text, not expansions.
+setup_doctor_line_misuses() {
+  grep -n 'NM_INIT_LINE' "$1" \
+    | grep -v ':[[:space:]]*#' \
+    | grep -vE ':[[:space:]]*NM_INIT_LINE=' \
+    | grep -vE ':[[:space:]]*(SETUP2|SETUP2_PROMOTE)=' \
+    | grep -vE ':[[:space:]]*\[ -n "\$NM_INIT_LINE" \] && SETUP2_PROMOTE=' \
+    | grep -vE ':[0-9]+\. \$NM_INIT_LINE"?$' \
+    || true
+}
+
+test_pipeline_rules_do_not_hang_on_the_setup_doctor_line() {
+  local coupled
+  [ -z "$(setup_doctor_line_misuses "$ROOT/bin/fm-brief.sh")" ] || fail \
+    "the Setup doctor line decides something beyond its Setup list item:"$'\n'"$(setup_doctor_line_misuses "$ROOT/bin/fm-brief.sh")"
+  # Control: the coupling this guard exists to reject must actually be reported,
+  # reproduced from the real script rather than a hand-written fixture.
+  coupled="$TMP_ROOT/fm-brief-coupled.sh"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the replacement text is the script's own literal condition, not an expansion.
+  sed 's/if \[ "\$NM_MODE" -eq 1 \]; then/if [ -n "$NM_INIT_LINE" ]; then/' \
+    "$ROOT/bin/fm-brief.sh" > "$coupled"
+  ! cmp -s "$ROOT/bin/fm-brief.sh" "$coupled" \
+    || fail "the coupling control did not change the script, so it proves nothing"
+  [ -n "$(setup_doctor_line_misuses "$coupled")" ] \
+    || fail "the guard accepted a script that gates the pipeline rules on the Setup doctor line"
+  pass "fm-brief.sh: the pipeline rules are gated on the delivery mode, not a Setup list item"
+}
+
 # A custom flow replaces the delivery mode's COMPLETION gate and nothing else.
 # Three rounds of review each lost a different mode-derived rule to that
 # replacement - first the precedence clause, then the pipeline-ownership rules,
@@ -974,6 +1012,16 @@ test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
 # carries its substance ("do not fall back to the default no-mistakes-to-PR
 # pipeline"). Recording that keeps the partition honest - the next reader can tell
 # a covered-elsewhere line from the silent drift this guard exists to catch.
+# This case list doubles as the declaration of how a brief for a project with NO
+# note reads, because every non-blank line of a generic Definition of done must be
+# either declared here or carried into the custom-flow one. Three deliberate
+# differences from the pre-change output live in it, and nothing else may:
+#  - no-mistakes: the pipeline-ownership and --yes sentences were strengthened.
+#  - no-mistakes: the CI-green return point moved out of the completion line into
+#    the pipeline rules, because it says how far a run is driven, not when the task
+#    is done; the `checks green` ready token stayed behind on the completion line.
+#  - direct-PR: the tooling prohibition and the merge-authority handover, once one
+#    line, are now two, which is also the repo's one-sentence-per-line rule.
 completion_gate_lines() {
   case "$1" in
     direct-PR)
@@ -999,7 +1047,7 @@ EOF
 The task is complete only when committed on your branch.
 When you believe it is complete, append \`done: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+After /no-mistakes reports CI green, append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
       ;;
   esac
@@ -1035,6 +1083,7 @@ mechanics_section() {
 test_custom_flow_keeps_mode_branch_and_handover_mechanics() {
   local home plain_home id brief plain mode n dropped sect
   local ff_brief="" ff_plain="" ff_id=""
+  local nm_brief="" nm_plain="" nm_id=""
   n=0
   for mode in no-mistakes direct-PR local-only; do
     n=$((n + 1))
@@ -1092,6 +1141,9 @@ test_custom_flow_keeps_mode_branch_and_handover_mechanics() {
       *)
         assert_no_grep "## Branch and handover mechanics" "$brief" \
           "no-mistakes mode contributes no branch or handover mechanics, so no such subsection may be emitted"
+        nm_brief=$brief
+        nm_plain=$plain
+        nm_id=$id
         ;;
     esac
 
@@ -1134,7 +1186,98 @@ test_custom_flow_keeps_mode_branch_and_handover_mechanics() {
     || fail "the scope control fixture does not carry the reinstated rule at all, so it proves nothing"
   [ -n "$(unreplaced_mode_lines "$ff_plain" "$misplaced_flow" local-only "$ff_id")" ] \
     || fail "the mechanics partition counted a mechanical rule as carried while it sat outside the Definition of done"
+  # The same control in no-mistakes mode, where the mechanical rule at issue is the
+  # CI-green return point rather than a branch rule. It reached the crewmate inside
+  # the completion line until that whole line was declared droppable, so proving the
+  # partition reports its removal is what stops it being lost that way a second time.
+  local mutated_nm="$TMP_ROOT/flow-mechanics-mutated-nm.md"
+  grep -Fv "never sit watching it keep monitoring in the background until merge" "$nm_brief" > "$mutated_nm"
+  [ -n "$(unreplaced_mode_lines "$nm_plain" "$mutated_nm" no-mistakes "$nm_id")" ] \
+    || fail "the mechanics partition accepted a custom-flow brief with the CI-green return point removed"
   pass "fm-brief.sh: a custom flow replaces the mode's completion gate and keeps its mechanics"
+}
+
+# The generic no-mistakes completion line used to carry a mechanical rule inside
+# itself - return when the run reports CI green, do not watch it until merge - and
+# declaring that whole line droppable dropped the mechanical half with the gate.
+# The two halves now live apart, and the split only holds if both directions do:
+# the return point is a pipeline rule and must survive into a custom-flow brief
+# (proved by the mechanics partition and its control above), while the `checks
+# green` ready token must NOT, because a custom flow may run no pipeline at all and
+# a brief that asks for a token the task can never emit leaves firstmate matching a
+# status line that never arrives.
+# pipeline_ready_token: the free-text token other components key on to recognize a
+# no-mistakes run that reached CI green.
+pipeline_ready_token() { printf 'checks green'; }
+
+# ready_token_lines <file>: every line of a brief that asks for that token. Empty
+# output means the brief promises firstmate no pipeline-only ready signal.
+ready_token_lines() {
+  grep -F -- "$(pipeline_ready_token)" "$1" || true
+}
+
+test_ci_ready_token_stays_on_the_pipeline_path() {
+  local home plain_home id brief plain note token mode n mutated
+  token=$(pipeline_ready_token)
+  # Non-vacuity: this is the live cross-component token, not a string only this
+  # test believes in. Its consumers are the crew-state reconciler and the
+  # captain-relevant classifier.
+  grep -Fq "$token" "$ROOT/bin/fm-crew-state.sh" \
+    || fail "bin/fm-crew-state.sh no longer keys on '$token', so this guard protects a dead token"
+  grep -Fq "$token" "$ROOT/bin/fm-classify-lib.sh" \
+    || fail "bin/fm-classify-lib.sh no longer keys on '$token', so this guard protects a dead token"
+
+  n=0
+  for mode in no-mistakes direct-PR local-only; do
+    n=$((n + 1))
+    home="$TMP_ROOT/flow-ready-token-home-$n"
+    mkdir -p "$home/data/project-flows"
+    printf -- '- flowproj [%s] - flow project (added 2026-08-06)\n' "$mode" > "$home/data/projects.md"
+    note="$home/data/project-flows/flowproj.md"
+    # A flow that declines the pipeline: it names no validation run of its own, so
+    # its crewmate has no run to report CI green for.
+    printf 'Open the DRAFT PR, then present the local preview and wait for the captain.\n' > "$note"
+    if grep -qE 'no-mistakes|pipeline|CI|checks' "$note"; then
+      fail "the fixture note names a pipeline run, so this guard could not tell scaffold text from captain content"
+    fi
+    id="brief-ready-token-$n"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode custom-flow brief was not scaffolded"
+    [ -z "$(ready_token_lines "$brief")" ] || fail \
+      "$mode custom-flow brief asks for the no-mistakes ready token its workflow can never emit:"$'\n'"$(ready_token_lines "$brief")"
+    if [ "$mode" = no-mistakes ]; then
+      # The other half of the split: the mechanical rule is present, in the section
+      # that only binds where the workflow itself runs the pipeline.
+      printf '%s\n' "$(dod_section "$brief")" | grep -Fq "CI green is a run's return point" \
+        || fail "the no-mistakes custom-flow brief lost the CI-green return point that keeps a crewmate off a run it should have handed back"
+    fi
+  done
+
+  # And the pipeline path still carries it: a plain no-mistakes brief keeps the
+  # token on its completion line, so the split moved the mechanical rule without
+  # breaking the signal firstmate reconciles against.
+  plain_home="$TMP_ROOT/flow-ready-token-plain-home"
+  mkdir -p "$plain_home/data"
+  printf -- '- plainproj [no-mistakes] - plain project (added 2026-08-06)\n' > "$plain_home/data/projects.md"
+  id="brief-ready-token-plain"
+  FM_HOME="$plain_home" "$ROOT/bin/fm-brief.sh" "$id" plainproj >/dev/null 2>&1
+  plain="$plain_home/data/$id/brief.md"
+  assert_present "$plain" "plain no-mistakes brief was not scaffolded"
+  assert_grep "done: PR {url} $token" "$plain" \
+    "the plain no-mistakes brief lost the ready token bin/fm-crew-state.sh reconciles against"
+  printf '%s\n' "$(dod_section "$plain")" | grep -Fq "CI green is a run's return point" \
+    || fail "the plain no-mistakes brief lost the CI-green return point when it moved out of the completion line"
+
+  # Control: the guard must report a token reinstated into a custom-flow brief,
+  # rather than passing because it looks at the wrong file or the wrong string.
+  mutated="$TMP_ROOT/flow-ready-token-mutated.md"
+  cp "$TMP_ROOT/flow-ready-token-home-1/data/brief-ready-token-1/brief.md" "$mutated"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown being reinstated, not a command.
+  printf 'Append `done: PR {url} %s` and stop.\n' "$token" >> "$mutated"
+  [ -n "$(ready_token_lines "$mutated")" ] \
+    || fail "the ready-token guard accepted a custom-flow brief that asks for the pipeline ready token"
+  pass "fm-brief.sh: the CI-ready return point survives while its pipeline-only token does not"
 }
 
 # Rule 5 sends the crewmate to the section that holds this brief's `done:` gate.
@@ -1155,13 +1298,16 @@ test_custom_flow_keeps_mode_branch_and_handover_mechanics() {
 # carriage return would push the underline past this guard's end anchor, so the
 # heading match allows either whitespace and every line is read `\r`-stripped -
 # otherwise a note in either of those shapes could break the anchor unreported.
+# A bare `#` is an empty top-level heading and closes the section as surely as a
+# titled one, so the match ends at whitespace OR end of line; requiring text after
+# the hashes is the blind spot that let that shape through unreported.
 assert_gate_under_anchor() {
   awk -v anchor="# $2" '
     { sub(/\r$/, "", $0) }
     /^[ \t]*(```|~~~)/ { fence = !fence; prev = ""; next }
     fence { next }
     $0 == anchor { seen = 1; prev = ""; next }
-    seen && /^#[ \t]/ { exit 1 }
+    seen && /^#([ \t]|$)/ { exit 1 }
     seen && prev != "" && /^[ \t]*=+[ \t]*$/ { exit 1 }
     seen && $0 == "## Reporting completion" { found = 1; exit 0 }
     { prev = ($0 ~ /^[ \t]*$/) ? "" : $0 }
@@ -1566,6 +1712,69 @@ test_custom_flow_note_tab_and_crlf_headings_are_demoted() {
   pass "fm-brief.sh: tab-separated and CRLF note headings are demoted under the anchor"
 }
 
+# A `#` with nothing after it is an empty heading in CommonMark, not a hashtag, so
+# it closes the anchor section exactly as a titled heading does. It reaches the
+# brief through two different paths - the note body, and a real front-matter block
+# that is passed through verbatim - and both must demote it, or the completion gate
+# ends up outside the section rule 5 names.
+test_custom_flow_note_empty_headings_are_demoted() {
+  local home id brief anchor
+  home="$TMP_ROOT/flow-note-empty-heading-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-06)\n' > "$home/data/projects.md"
+  anchor="Definition of done - MANDATORY custom delivery workflow"
+
+  cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+# flowproj custom delivery workflow
+
+#
+
+1. Open the DRAFT PR, then present the local preview.
+
+#flowproj is a hashtag, not a heading
+EOF
+  id="brief-flow-empty-heading-body"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief with an empty note heading was not scaffolded"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "an empty note heading stranded the \`done:\` gate outside the section rule 5 names"
+  assert_one_dod "$brief" "custom-flow brief with an empty note heading"
+  assert_line "##" "$brief" \
+    "an empty top-level heading in the note body escaped demotion"
+  assert_no_line "#" "$brief" \
+    "the empty top-level heading survived and still closes the Definition of done section"
+  assert_line "#flowproj is a hashtag, not a heading" "$brief" \
+    "a hashtag with no whitespace after the hashes was rewritten as a heading"
+
+  # The same shape inside real, terminated front matter: the region is passed
+  # through verbatim, so it is the one place a note line reaches the brief without
+  # being classified, and an empty heading there closes the section just the same.
+  cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+---
+owner: captain
+#
+---
+# flowproj custom delivery workflow
+
+1. Open the DRAFT PR, then present the local preview.
+EOF
+  id="brief-flow-empty-heading-frontmatter"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief with an empty front-matter heading was not scaffolded"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "an empty heading inside front matter stranded the \`done:\` gate outside the section rule 5 names"
+  assert_one_dod "$brief" "custom-flow brief with an empty front-matter heading"
+  assert_no_line "#" "$brief" \
+    "an empty heading inside front matter reached the brief undemoted and closes the Definition of done section"
+  assert_line "## flowproj custom delivery workflow" "$brief" \
+    "the note body below the front matter was not demoted"
+  assert_grep "Open the DRAFT PR, then present the local preview." "$brief" \
+    "the note lost its flow steps while its front matter was classified"
+  pass "fm-brief.sh: an empty note heading is demoted in the body and inside front matter"
+}
+
 # The completion bridge must not send a review-ready handoff to the pause verb.
 # Rule 5 in the same brief reserves that verb for a wait that clears on its own,
 # and firstmate answers it by leaving the idle pane alone on a long recheck
@@ -1881,13 +2090,16 @@ test_custom_flow_replaces_generic_definition_of_done
 test_custom_flow_states_precedence_over_mode_rules
 test_pipeline_trigger_guard_rejects_every_reinstated_trigger
 test_custom_flow_keeps_no_mistakes_pipeline_guardrails
+test_pipeline_rules_do_not_hang_on_the_setup_doctor_line
 test_custom_flow_keeps_mode_branch_and_handover_mechanics
+test_ci_ready_token_stays_on_the_pipeline_path
 test_rule5_points_at_the_heading_holding_the_done_gate
 test_custom_flow_note_with_its_own_headings_keeps_the_gate_under_the_anchor
 test_custom_flow_note_with_underline_headings_keeps_the_gate_under_the_anchor
 test_custom_flow_note_leading_dashes_still_demote_headings
 test_custom_flow_note_indented_headings_are_demoted
 test_custom_flow_note_tab_and_crlf_headings_are_demoted
+test_custom_flow_note_empty_headings_are_demoted
 test_custom_flow_bridge_escalates_a_human_handoff_instead_of_pausing
 test_custom_flow_bridge_keeps_the_pr_url_on_the_status_line
 test_custom_flow_note_leaves_scout_and_secondmate_briefs_byte_identical

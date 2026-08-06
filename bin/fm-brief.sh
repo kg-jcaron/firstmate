@@ -55,11 +55,15 @@
 # so the note nests inside that section instead of closing it and the completion
 # gate stays under the heading rule 5 names. In no-mistakes mode the injected
 # section also carries the pipeline-ownership rules (drive an active run through
-# its gates, never hand-edit or abort it, never pass --yes), which constrain how
-# a run is driven rather than when the task is done. It never tells the crewmate
-# to start a run: those rules bind only where a step of the note's own workflow
+# its gates, never hand-edit or abort it, never pass --yes, and return when it
+# reports CI green instead of watching it until merge), which constrain how a run
+# is driven rather than when the task is done. It never tells the crewmate to
+# start a run: those rules bind only where a step of the note's own workflow
 # runs the pipeline, so a flow that includes a pipeline run must name that step
-# itself. Only the mode's COMPLETION gate is replaced: the mode's MECHANICAL
+# itself. The generic gate's `checks green` ready token stays with that gate and
+# never rides along, because a custom flow may run no pipeline at all and must
+# not promise a signal it cannot emit; the bridge asks for the PR's URL instead.
+# Only the mode's COMPLETION gate is replaced: the mode's MECHANICAL
 # branch-and-handover rules (local-only's clean fast-forward and rebase, and each
 # mode's merge-authority handover where it has one) still reach the crewmate as
 # their own subsection, which states that it decides nothing about completion.
@@ -359,7 +363,11 @@ EOF
 
 # NM_INIT_LINE is the single owner of the no-mistakes doctor/init instruction; both
 # the fresh and promote Setup sections place it (at a different list number).
+# It places a Setup list item and decides nothing else: NM_MODE below is what says
+# the mode is no-mistakes, so moving, dropping, or unconditioning the Setup item
+# can never silently change which briefs carry the pipeline-ownership rules.
 NM_INIT_LINE=""
+NM_MODE=0
 
 # DOD_ANCHOR is the single owner of the completion section's heading text, so
 # rule 5 can point at whichever heading actually holds this brief's `done:` gate.
@@ -371,10 +379,18 @@ DOD_ANCHOR='Definition of done'
 # approval authority, not about when the task is complete, so they must reach a
 # no-mistakes-mode crewmate whichever Definition of done the brief carries: the
 # generic one below, or a project's custom delivery workflow.
+# The CI-green return point belongs here for that same reason: it says how far a
+# crewmate drives a run, not when the task is done. It used to sit inside the
+# generic completion line, so replacing that line dropped it - one more mechanical
+# rule lost with a completion gate. AGENTS.md requires the worker to report at CI
+# green rather than waiting for merge monitoring to finish, so a brief that keeps
+# a pipeline rule but not its return point leaves the crewmate watching a run it
+# should already have handed back.
 IFS= read -r -d '' NM_GUARDRAILS <<'EOF' || true
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
 Do not hand-edit, commit, abort, or restart while a run is active, and do not fix findings yourself - the pipeline applies every fix.
+CI green is a run's return point: come back to your own instructions there, and never sit watching it keep monitoring in the background until merge.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 7) and stop.
@@ -436,6 +452,7 @@ EOF
       # subsection, so this mode contributes no branch or handover mechanics.
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief-text markdown that must reach the reading agent verbatim, not run as a command at scaffold time.
     NM_INIT_LINE='Run `no-mistakes doctor`; if it reports the repo is not initialized here, run `no-mistakes init`.'
+    NM_MODE=1
     SETUP2="
 2. $NM_INIT_LINE"
     RULE1='1. Never push to the default branch. Never merge a PR.'
@@ -447,7 +464,7 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
 $NM_GUARDRAILS
 
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+After /no-mistakes reports CI green, append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
     ;;
 esac
@@ -489,11 +506,15 @@ DOD=${DOD%$'\n'}
 # heading back in the position that closes the anchor section. The buffered
 # two-pass form is what makes the bounded region knowable before the first line is
 # emitted.
-# ATX headings are matched on a space or a tab after the hashes, and one to three
-# leading spaces still open a heading in CommonMark, so both shapes are demoted
-# (with the indent normalized) rather than escaping through the passthrough rules
-# at their original level; four spaces is an indented code block and a `#` run
-# with no following whitespace is a hashtag, and both still pass through.
+# ATX headings are matched on a space, a tab, or nothing at all after the hashes,
+# and one to three leading spaces still open a heading in CommonMark, so every one
+# of those shapes is demoted (with the indent normalized) rather than escaping
+# through the passthrough rules at its original level. A bare `#` is an empty
+# heading, not a hashtag, and closes the anchor section exactly as a titled one
+# does - inside a passed-through front-matter region as readily as in the body, so
+# the same match is what keeps that region free of top-level headings too. Four
+# spaces is an indented code block and hashes followed directly by text are a
+# hashtag, and both still pass through.
 # A trailing carriage return is stripped from every line, because a CRLF note
 # otherwise defeats the underline rules - their end anchors cannot match past the
 # `\r` - and leaves the note's own underline heading standing at top level.
@@ -510,7 +531,7 @@ fm_brief_demote_headings() {
     function atx(text,   n) {
       n = 0
       while (n < 3 && substr(text, 1, 1) == " ") { text = substr(text, 2); n++ }
-      if (text ~ /^#+[ \t]/) return text
+      if (text ~ /^#+([ \t]|$)/) return text
       return ""
     }
     { sub(/\r$/, "", $0); line[NR] = $0 }
@@ -595,11 +616,14 @@ Append `'"$PAUSED_VERB"': {why}` only for a bounded wait you expect to clear by 
 Whenever the workflow has opened a PR by then, name it in that status line as its full `https://...` URL - `done: PR https://.../pull/{n} {summary}`, or the same URL inside the `needs-decision:` line - because firstmate acts on that URL directly.
 Never report completion merely because the change is committed.'
   DOD=$(printf '%s\n\n%s' "$FLOW_LEAD" "$FLOW_BODY")
-  if [ -n "$NM_INIT_LINE" ]; then
+  if [ "$NM_MODE" -eq 1 ]; then
     # A custom flow may still run the pipeline (Setup also runs `no-mistakes
     # doctor` in this mode), so the pipeline-ownership and authority rules ride
     # along as their own subsection. They constrain how a run is driven and
     # never redefine the completion gate the flow above owns.
+    # The condition is the resolved mode, never the Setup doctor line: whether a
+    # crewmate receives these authority rules must not hang on a variable whose
+    # job is placing a Setup list item.
     # The workflow alone decides whether a run happens, so these rules are
     # conditional on its own choice and start nothing: an affirmative "run it at
     # the validation step" sentence emitted after a flow that does not ask for a
