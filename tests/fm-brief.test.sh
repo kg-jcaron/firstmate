@@ -1280,6 +1280,45 @@ test_ci_ready_token_stays_on_the_pipeline_path() {
   pass "fm-brief.sh: the CI-ready return point survives while its pipeline-only token does not"
 }
 
+# unfenced <file>: print the file with every fenced code block elided, one blank
+# line standing in for each removed block. The brief's guards read what markdown
+# actually renders as prose, and fenced content renders as code: a shell comment
+# inside a fence is not a heading, and a scaffold section swallowed by an open
+# fence is not a reachable instruction.
+# Fence rules follow markdown, not a delimiter count: a delimiter closes a fence
+# only when it is the same character, at least as long, and carries nothing but
+# whitespace after it. Toggling on either delimiter reads a `~~~` line inside a
+# ``` block as a close, which calls a still-open fence balanced - the same
+# misreading bin/fm-brief.sh has to avoid to know when it must close one.
+unfenced() {
+  awk '
+    function delim(text,   t, c, n) {
+      t = text
+      sub(/^[ \t]*/, "", t)
+      c = substr(t, 1, 1)
+      if (c != "`" && c != "~") return ""
+      n = 0
+      while (substr(t, n + 1, 1) == c) n++
+      if (n < 3) return ""
+      return substr(t, 1, n)
+    }
+    function closes(text, opener,   t, run) {
+      run = delim(text)
+      if (run == "" || substr(run, 1, 1) != substr(opener, 1, 1)) return 0
+      if (length(run) < length(opener)) return 0
+      t = text
+      sub(/^[ \t]*/, "", t)
+      return substr(t, length(run) + 1) ~ /^[ \t]*$/
+    }
+    {
+      sub(/\r$/, "", $0)
+      if (fence) { if (closes($0, opener)) fence = 0; next }
+      if (delim($0) != "") { fence = 1; opener = delim($0); print ""; next }
+      print
+    }
+  ' "$1"
+}
+
 # Rule 5 sends the crewmate to the section that holds this brief's `done:` gate.
 # The custom-flow injection renames that heading, so the pointer must follow the
 # rename and the gate must live under it - the original defect was exactly a
@@ -1289,8 +1328,8 @@ test_ci_ready_token_stays_on_the_pipeline_path() {
 # heading in between closes that section, and reaching end of file without ever
 # seeing the bridge fails too - an ordering guard that can only fail on the
 # heading it happens to look for would report coverage it does not have.
-# Fenced blocks are skipped for the same reason bin/fm-brief.sh skips them: a
-# shell comment inside a fence is not a markdown heading and closes nothing.
+# Fenced blocks are elided first, so an unreachable bridge inside a code block
+# fails here exactly as a wrong-section one does.
 # An `===` underline over a text line is a top-level heading too, so the guard
 # tracks the previous line and fails on that shape as well - checking only `^# `
 # would pass on a brief an underline-style note had already broken.
@@ -1301,18 +1340,20 @@ test_ci_ready_token_stays_on_the_pipeline_path() {
 # A bare `#` is an empty top-level heading and closes the section as surely as a
 # titled one, so the match ends at whitespace OR end of line; requiring text after
 # the hashes is the blind spot that let that shape through unreported.
+# One to three leading SPACES still open a heading in CommonMark, and that is
+# exactly the shape bin/fm-brief.sh normalizes, so the match allows them - anchored
+# at column 0 this guard would call the gate correctly placed if that normalization
+# ever regressed. A tab or a fourth space makes it an indented code block instead,
+# so neither is allowed here.
 assert_gate_under_anchor() {
-  awk -v anchor="# $2" '
-    { sub(/\r$/, "", $0) }
-    /^[ \t]*(```|~~~)/ { fence = !fence; prev = ""; next }
-    fence { next }
+  unfenced "$1" | awk -v anchor="# $2" '
     $0 == anchor { seen = 1; prev = ""; next }
-    seen && /^#([ \t]|$)/ { exit 1 }
+    seen && /^ ? ? ?#([ \t]|$)/ { exit 1 }
     seen && prev != "" && /^[ \t]*=+[ \t]*$/ { exit 1 }
     seen && $0 == "## Reporting completion" { found = 1; exit 0 }
     { prev = ($0 ~ /^[ \t]*$/) ? "" : $0 }
     END { if (!seen || !found) exit 1 }
-  ' "$1" || fail "$3"
+  ' || fail "$3"
 }
 
 test_rule5_points_at_the_heading_holding_the_done_gate() {
@@ -1362,6 +1403,15 @@ assert_line() {
 
 assert_no_line() {
   ! grep -Fxq -- "$1" "$2" || fail "$3"
+}
+
+# assert_unfenced_line <file> <exact-line> <msg>: the line must reach the reading
+# agent as prose, not as the contents of a fenced code block. A whole-line grep
+# cannot tell the difference, and a note that leaves a fence open swallows every
+# scaffold-owned section appended after it while each of those lines is still
+# present in the file.
+assert_unfenced_line() {
+  unfenced "$1" | grep -Fxq -- "$2" || fail "$3"
 }
 
 test_custom_flow_note_with_its_own_headings_keeps_the_gate_under_the_anchor() {
@@ -1775,6 +1825,118 @@ EOF
   pass "fm-brief.sh: an empty note heading is demoted in the body and inside front matter"
 }
 
+# Every scaffold-owned section is appended AFTER the note body, so a note that
+# leaves a code fence open - or carries one stray delimiter - renders the pipeline
+# rules, the branch mechanics and the whole completion bridge as fenced code. The
+# brief then carries no reachable completion gate at all, which is worse than the
+# defect this change removes: the generic gate that used to sit below is gone. The
+# property under test is reachability, not one note shape, so each fixture asserts
+# that the scaffold sections arrive as prose while the note's own content survives.
+test_custom_flow_note_unbalanced_fence_keeps_scaffold_sections_reachable() {
+  local home id brief anchor mode n shape marker demoted unfixed
+  anchor="Definition of done - MANDATORY custom delivery workflow"
+  n=0
+  # unclosed: the ordinary shape - a note whose last step is a command block the
+  # captain never closed. stray: a lone delimiter with nothing to close. mismatched:
+  # a `~~~` line inside a ``` block, which cancels nothing in markdown, so a parity
+  # count that toggles on either delimiter reads the note as balanced and leaves the
+  # real fence open. front-matter: an opening delimiter inside a front-matter-shaped
+  # prefix, the one region passed through without being classified, so the region's
+  # own bound is what keeps its delimiter accounted for.
+  for shape in unclosed stray mismatched front-matter; do
+    n=$((n + 1))
+    demoted=1
+    # local-only is the mode that also contributes branch mechanics, so the middle
+    # fixture proves those reach the crewmate as prose too, not just the bridge.
+    case "$shape" in
+      stray) mode=local-only ;;
+      *) mode=no-mistakes ;;
+    esac
+    home="$TMP_ROOT/flow-fence-home-$n"
+    mkdir -p "$home/data/project-flows"
+    printf -- '- flowproj [%s] - flow project (added 2026-08-06)\n' "$mode" > "$home/data/projects.md"
+    case "$shape" in
+      unclosed)
+        printf '# flowproj custom delivery workflow\n\n1. Open the DRAFT PR, then run:\n\n```sh\ngit push --set-upstream origin HEAD\n' \
+          > "$home/data/project-flows/flowproj.md"
+        marker="git push --set-upstream origin HEAD"
+        ;;
+      stray)
+        printf '# flowproj custom delivery workflow\n\n1. Present the local preview.\n\n```\n' \
+          > "$home/data/project-flows/flowproj.md"
+        marker="1. Present the local preview."
+        ;;
+      mismatched)
+        printf '# flowproj custom delivery workflow\n\n```sh\ngit push --set-upstream origin HEAD\n~~~\n\n1. Present the local preview.\n' \
+          > "$home/data/project-flows/flowproj.md"
+        marker="1. Present the local preview."
+        ;;
+      *)
+        printf -- '---\nowner: captain\n```sh\ngit push --set-upstream origin HEAD\n---\n# flowproj custom delivery workflow\n\n1. Present the local preview.\n' \
+          > "$home/data/project-flows/flowproj.md"
+        marker="1. Present the local preview."
+        # The delimiter bounds the front-matter region, so the note is classified
+        # from its first line and its own heading ends up inside the fence rather
+        # than demoted - unrendered as a heading either way, which is what the
+        # anchor needs.
+        demoted=0
+        ;;
+    esac
+    id="brief-flow-fence-$n"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$shape-fence custom-flow brief was not scaffolded"
+    assert_gate_under_anchor "$brief" "$anchor" \
+      "a note with an $shape fence stranded the \`done:\` gate outside the section rule 5 names"
+    assert_one_dod "$brief" "$shape-fence custom-flow brief"
+    assert_unfenced_line "$brief" "## Reporting completion" \
+      "a note with an $shape fence swallowed the completion bridge into a code block"
+    assert_unfenced_line "$brief" "Never report completion merely because the change is committed." \
+      "a note with an $shape fence swallowed the bridge's own gate lines into a code block"
+    case "$mode" in
+      local-only)
+        assert_unfenced_line "$brief" "## Branch and handover mechanics" \
+          "a note with an $shape fence swallowed the mode's branch mechanics into a code block"
+        assert_unfenced_line "$brief" "Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward." \
+          "a note with an $shape fence swallowed the fast-forward rule bin/fm-merge-local.sh requires into a code block"
+        ;;
+      *)
+        assert_unfenced_line "$brief" "## Validation pipeline rules" \
+          "a note with an $shape fence swallowed the pipeline-ownership rules into a code block"
+        ;;
+    esac
+    # The captain's note still reaches the crewmate: only the injected copy is
+    # normalized, and nothing of the note's own body is dropped to achieve it.
+    if [ "$demoted" -eq 1 ]; then
+      assert_line "## flowproj custom delivery workflow" "$brief" \
+        "the $shape-fence note's own heading was not demoted under the Definition of done"
+    fi
+    assert_grep "$marker" "$brief" \
+      "the $shape-fence note lost its own body while its fence was balanced"
+  done
+
+  # Control: strip the closing delimiter the injection appends and both guards must
+  # report the result, or they would pass on the very brief this fixture exists to
+  # reject. `brief` is still the last shape's no-mistakes brief here.
+  unfixed="$TMP_ROOT/flow-fence-unfixed.md"
+  awk '
+    { lines[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (lines[i] == "```" && lines[i + 1] == "" && lines[i + 2] ~ /^## /) { dropped = 1; continue }
+        print lines[i]
+      }
+      if (!dropped) exit 1
+    }
+  ' "$brief" > "$unfixed" \
+    || fail "the fence control fixture found no appended closing delimiter to strip, so it proves nothing"
+  ( assert_gate_under_anchor "$unfixed" "$anchor" control ) >/dev/null 2>&1 \
+    && fail "the anchor guard accepted a brief whose completion bridge sits inside the note's open fence"
+  ( assert_unfenced_line "$unfixed" "## Reporting completion" control ) >/dev/null 2>&1 \
+    && fail "the reachability guard accepted a completion bridge rendered as fenced code"
+  pass "fm-brief.sh: an unbalanced note fence never swallows the scaffold's own sections"
+}
+
 # The completion bridge must not send a review-ready handoff to the pause verb.
 # Rule 5 in the same brief reserves that verb for a wait that clears on its own,
 # and firstmate answers it by leaving the idle pane alone on a long recheck
@@ -2100,6 +2262,7 @@ test_custom_flow_note_leading_dashes_still_demote_headings
 test_custom_flow_note_indented_headings_are_demoted
 test_custom_flow_note_tab_and_crlf_headings_are_demoted
 test_custom_flow_note_empty_headings_are_demoted
+test_custom_flow_note_unbalanced_fence_keeps_scaffold_sections_reachable
 test_custom_flow_bridge_escalates_a_human_handoff_instead_of_pausing
 test_custom_flow_bridge_keeps_the_pr_url_on_the_status_line
 test_custom_flow_note_leaves_scout_and_secondmate_briefs_byte_identical

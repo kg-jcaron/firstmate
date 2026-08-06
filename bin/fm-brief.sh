@@ -53,7 +53,9 @@
 # completion instruction elsewhere in the brief, because rule 1 stays
 # mode-derived. The note's own headings are demoted one level as it is injected,
 # so the note nests inside that section instead of closing it and the completion
-# gate stays under the heading rule 5 names. In no-mistakes mode the injected
+# gate stays under the heading rule 5 names, and a code fence the note leaves open
+# is closed in that injected copy so the sections appended after it stay reachable
+# prose rather than rendering as code. In no-mistakes mode the injected
 # section also carries the pipeline-ownership rules (drive an active run through
 # its gates, never hand-edit or abort it, never pass --yes, and return when it
 # reports CI green instead of watching it until merge), which constrain how a run
@@ -476,8 +478,9 @@ esac
 # normalized body the historical $(...) form produced.
 DOD=${DOD%$'\n'}
 
-# fm_brief_demote_headings - read a note body on stdin and print it with every
-# heading pushed one level deeper.
+# fm_brief_normalize_note - read a note body on stdin and print it ready to be
+# injected as a subsection: every heading pushed one level deeper, and any code
+# fence the note leaves open closed again at the end.
 #
 # The injected note becomes a subsection of the scaffold-owned Definition of done
 # heading, so it must not carry a heading that CLOSES that section. Every real
@@ -494,16 +497,27 @@ DOD=${DOD%$'\n'}
 # untouched so a shell comment inside a fence is never mistaken for a heading and
 # a front-matter delimiter is never read as an underline, and H6 is the floor
 # because markdown has no H7.
+# Fence parity is part of that contract, not bookkeeping for the heading rules.
+# Every scaffold-owned section - the pipeline rules, the branch mechanics, the
+# completion bridge - is appended AFTER this body, so a note that leaves a fence
+# open, or carries one stray delimiter, renders all of them as code and the brief
+# ends up with no reachable completion gate at all. An unclosed fence is therefore
+# closed here with its own opening delimiter, in the injected copy only. Closing
+# is decided the way markdown decides it: a delimiter only closes a fence of the
+# same character, at least as long, with nothing but whitespace after it, because
+# a `~~~` line inside a ``` block cancels nothing and treating it as a close reads
+# the whole remainder of the note as prose while the real fence stays open.
 # Front matter is recognized only when the whole shape is present AND the region
 # is bounded the way real front matter is: a leading `---`, a YAML key on the next
 # line, then a run of lines that could each be metadata, closed by a real
 # `---`/`...` terminator. A markdown heading ends that search unclosed, in either
-# heading style, so no line markdown would render as a top-level heading can ever
-# sit inside a passed-through region. Treating any leading `---` as an opener, or
-# letting the terminator search run to end of file, silently disabled demotion for
-# a whole prefix whenever the captain opened a note with a horizontal rule or left
-# a block unterminated above a later rule, which put the note's own top-level
-# heading back in the position that closes the anchor section. The buffered
+# heading style, and so does a fence delimiter, so no line markdown would render
+# as a top-level heading or open a code block can ever sit inside a passed-through
+# region. Treating any leading `---` as an opener, or letting the terminator search
+# run to end of file, silently disabled demotion for a whole prefix whenever the
+# captain opened a note with a horizontal rule or left a block unterminated above a
+# later rule, which put the note's own top-level heading back in the position that
+# closes the anchor section. The buffered
 # two-pass form is what makes the bounded region knowable before the first line is
 # emitted.
 # ATX headings are matched on a space, a tab, or nothing at all after the hashes,
@@ -518,7 +532,16 @@ DOD=${DOD%$'\n'}
 # A trailing carriage return is stripped from every line, because a CRLF note
 # otherwise defeats the underline rules - their end anchors cannot match past the
 # `\r` - and leaves the note's own underline heading standing at top level.
-fm_brief_demote_headings() {
+#
+# Known limitation: an underline heading whose TEXT wraps across several lines is
+# only partly converted, because a single preceding line is held. Such a note
+# emits its earlier text lines as prose and rewrites only the last one as the
+# demoted heading. That costs fidelity to the captain's wording, not safety: no
+# top-level heading survives, so the anchor still contains the completion gate,
+# and wrapped heading text is rare in a hand-written flow note. Widening the hold
+# to a paragraph would make every ordinary paragraph above a horizontal rule a
+# heading candidate, which is the worse trade.
+fm_brief_normalize_note() {
   awk '
     function flush() { if (held) { print hold; held = 0 } }
     function setext(hashes,   text) {
@@ -534,6 +557,24 @@ fm_brief_demote_headings() {
       if (text ~ /^#+([ \t]|$)/) return text
       return ""
     }
+    function delim(text,   t, c, n) {
+      t = text
+      sub(/^[ \t]*/, "", t)
+      c = substr(t, 1, 1)
+      if (c != "`" && c != "~") return ""
+      n = 0
+      while (substr(t, n + 1, 1) == c) n++
+      if (n < 3) return ""
+      return substr(t, 1, n)
+    }
+    function closes(text, opener,   t, run) {
+      run = delim(text)
+      if (run == "" || substr(run, 1, 1) != substr(opener, 1, 1)) return 0
+      if (length(run) < length(opener)) return 0
+      t = text
+      sub(/^[ \t]*/, "", t)
+      return substr(t, length(run) + 1) ~ /^[ \t]*$/
+    }
     { sub(/\r$/, "", $0); line[NR] = $0 }
     END {
       front_end = 0
@@ -541,13 +582,18 @@ fm_brief_demote_headings() {
         for (i = 3; i <= NR; i++) {
           if (line[i] ~ /^(---|\.\.\.)[ \t]*$/) { front_end = i; break }
           if (atx(line[i]) != "" || line[i] ~ /^[ \t]*=+[ \t]*$/) break
+          if (delim(line[i]) != "") break
         }
       }
       for (i = 1; i <= NR; i++) {
         text = line[i]
         if (i <= front_end) { print text; continue }
-        if (text ~ /^[ \t]*(```|~~~)/) { flush(); fence = !fence; print text; continue }
-        if (fence) { flush(); print text; continue }
+        if (fence) {
+          if (closes(text, opener)) { fence = 0 }
+          print text
+          continue
+        }
+        if (delim(text) != "") { flush(); fence = 1; opener = delim(text); print text; continue }
         if (held && text ~ /^[ \t]*=+[ \t]*$/) { setext("##"); continue }
         if (held && text ~ /^[ \t]*-+[ \t]*$/) { setext("###"); continue }
         flush()
@@ -563,6 +609,7 @@ fm_brief_demote_headings() {
         held = 1
       }
       flush()
+      if (fence) print opener
     }
   '
 }
@@ -579,7 +626,7 @@ fm_brief_demote_headings() {
 # line are written verbatim, never re-evaluated. A project with no note leaves
 # $DOD byte-identical.
 if FLOW_NOTE=$(fm_project_flow_note "$DATA" "$REPO"); then
-  FLOW_BODY=$(fm_brief_demote_headings < "$FLOW_NOTE")
+  FLOW_BODY=$(fm_brief_normalize_note < "$FLOW_NOTE")
   DOD_ANCHOR='Definition of done - MANDATORY custom delivery workflow'
   # The precedence sentence is load-bearing, not decoration: rule 1 is still
   # derived from the delivery mode, so a local-only project carrying a custom
