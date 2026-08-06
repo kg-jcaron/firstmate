@@ -22,6 +22,11 @@ TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
 
+# Literal tab and carriage return, so heading fixtures and their assertions can
+# name whitespace no editor renders visibly.
+TAB=$'\t'
+CR=$'\r'
+
 # The script itself must always parse under the ambient bash. That is Bash 5 in
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
 # is a weak guard on its own; test_no_heredoc_in_command_substitution and the
@@ -963,6 +968,12 @@ test_custom_flow_keeps_no_mistakes_pipeline_guardrails() {
 # is what makes this structural: a mechanical rule added to a mode later fails
 # here until it is either carried into the custom-flow brief or deliberately
 # declared a completion gate.
+# One entry is droppable for a different, recorded reason: direct-PR's "Do NOT run
+# /no-mistakes." is a tooling prohibition, the same mechanical category as the
+# fast-forward rule, and it is listed here only because the injected lead already
+# carries its substance ("do not fall back to the default no-mistakes-to-PR
+# pipeline"). Recording that keeps the partition honest - the next reader can tell
+# a covered-elsewhere line from the silent drift this guard exists to catch.
 completion_gate_lines() {
   case "$1" in
     direct-PR)
@@ -995,15 +1006,21 @@ EOF
 }
 
 # unreplaced_mode_lines <plain-brief> <flow-brief> <mode> <id>: print every line
-# of the plain brief's Definition of done that the custom-flow brief dropped and
-# that is NOT a declared completion-gate line. Empty output means the flow
-# replaced exactly the completion gate.
+# of the plain brief's Definition of done that the custom-flow brief's Definition
+# of done dropped and that is NOT a declared completion-gate line. Empty output
+# means the flow replaced exactly the completion gate.
+# Survival is looked for inside the custom-flow Definition of done, not anywhere in
+# the brief: the property being proved is that the mode's mechanical rules reach
+# the crewmate in the section that replaced the gate, so a future mode-derived
+# sentence that also happens to appear in Setup, Rules, or project memory must not
+# count as carried once the mechanics subsection has dropped it.
 unreplaced_mode_lines() {
-  local plain=$1 flow=$2 allow line
+  local plain=$1 flow=$2 allow flow_dod line
   allow=$(completion_gate_lines "$3" "$4")
+  flow_dod=$(dod_section "$flow")
   while IFS= read -r line; do
     [ -n "${line//[[:space:]]/}" ] || continue
-    grep -Fxq -- "$line" "$flow" && continue
+    printf '%s\n' "$flow_dod" | grep -Fxq -- "$line" && continue
     printf '%s\n' "$allow" | grep -Fxq -- "$line" && continue
     printf '%s\n' "$line"
   done < <(dod_section "$plain")
@@ -1055,6 +1072,11 @@ test_custom_flow_keeps_mode_branch_and_handover_mechanics() {
           "direct-PR custom-flow brief has no branch-and-handover subsection"
         assert_line "The configured merge authority decides whether to merge the PR; firstmate relays the outcome." "$brief" \
           "direct-PR custom-flow brief lost the merge-authority handover"
+        # The one allow-list entry that is a mechanical rule rather than a
+        # completion gate is droppable only because the lead carries its
+        # substance, so that sentence must actually be there.
+        assert_line "Follow it exactly, and do not fall back to the default no-mistakes-to-PR pipeline." "$brief" \
+          "direct-PR custom-flow brief dropped the lead sentence that carries the mode's do-not-run-the-pipeline prohibition"
         ;;
       local-only)
         assert_grep "## Branch and handover mechanics" "$brief" \
@@ -1098,6 +1120,20 @@ test_custom_flow_keeps_mode_branch_and_handover_mechanics() {
   printf 'Sign every commit on your branch with the release key.\n' >> "$mutated_plain"
   [ -n "$(unreplaced_mode_lines "$mutated_plain" "$ff_brief" local-only "$ff_id")" ] \
     || fail "the mechanics partition accepted a new mode-derived rule missing from the custom-flow brief"
+  # Scope control: the same rule reinstated ABOVE the Definition of done is still
+  # dropped from the section that replaced the gate, so the partition must keep
+  # reporting it. Searching the whole brief would call it carried, and a future
+  # mode-derived sentence that also appears in Setup, Rules, or project memory
+  # would then mask its removal from the mechanics subsection.
+  local misplaced_flow="$TMP_ROOT/flow-mechanics-misplaced-flow.md"
+  awk -v rule="Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward." '
+    /^# Definition of done/ && !inserted { print rule; inserted = 1 }
+    { print }
+  ' "$mutated_flow" > "$misplaced_flow"
+  grep -Fxq -- "Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward." "$misplaced_flow" \
+    || fail "the scope control fixture does not carry the reinstated rule at all, so it proves nothing"
+  [ -n "$(unreplaced_mode_lines "$ff_plain" "$misplaced_flow" local-only "$ff_id")" ] \
+    || fail "the mechanics partition counted a mechanical rule as carried while it sat outside the Definition of done"
   pass "fm-brief.sh: a custom flow replaces the mode's completion gate and keeps its mechanics"
 }
 
@@ -1115,12 +1151,17 @@ test_custom_flow_keeps_mode_branch_and_handover_mechanics() {
 # An `===` underline over a text line is a top-level heading too, so the guard
 # tracks the previous line and fails on that shape as well - checking only `^# `
 # would pass on a brief an underline-style note had already broken.
+# A tab after the hashes opens a heading just as a space does, and a trailing
+# carriage return would push the underline past this guard's end anchor, so the
+# heading match allows either whitespace and every line is read `\r`-stripped -
+# otherwise a note in either of those shapes could break the anchor unreported.
 assert_gate_under_anchor() {
   awk -v anchor="# $2" '
+    { sub(/\r$/, "", $0) }
     /^[ \t]*(```|~~~)/ { fence = !fence; prev = ""; next }
     fence { next }
     $0 == anchor { seen = 1; prev = ""; next }
-    seen && /^# / { exit 1 }
+    seen && /^#[ \t]/ { exit 1 }
     seen && prev != "" && /^[ \t]*=+[ \t]*$/ { exit 1 }
     seen && $0 == "## Reporting completion" { found = 1; exit 0 }
     { prev = ($0 ~ /^[ \t]*$/) ? "" : $0 }
@@ -1290,12 +1331,17 @@ EOF
   pass "fm-brief.sh: an underline-style note heading is demoted and never closes the anchor"
 }
 
-# A leading `---` is only YAML front matter when the whole shape is there. Reading
-# any leading `---` as an opener disabled demotion for the ENTIRE note whenever
-# the captain opened one with a horizontal rule or left a block unterminated, and
-# an undemoted top-level heading closes the anchor section again - the exact
-# wrong-section resolution this change exists to stop. Each fixture below is a
-# note shape a captain could plausibly write.
+# A leading `---` is only YAML front matter when the whole shape is there AND the
+# region is bounded the way real front matter is. Reading any leading `---` as an
+# opener disabled demotion for the ENTIRE note, and letting the terminator search
+# run to end of file did the same to a whole prefix whenever an unterminated block
+# sat above a later horizontal rule, and an undemoted top-level heading closes the
+# anchor section again - the exact wrong-section resolution this change exists to
+# stop. Each fixture below is a note shape a captain could plausibly write. The
+# three `*-then-rule` shapes are the combination a terminator search bounded only by
+# end of file swallows whole, and the two compact ones isolate one bound each - the
+# ATX heading in `heading-then-rule`, the heading underline in
+# `underline-then-rule` - so neither bound can be dropped without a named failure.
 test_custom_flow_note_leading_dashes_still_demote_headings() {
   local home id brief anchor n shape
   home="$TMP_ROOT/flow-note-frontmatter-home"
@@ -1303,11 +1349,12 @@ test_custom_flow_note_leading_dashes_still_demote_headings() {
   printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-06)\n' > "$home/data/projects.md"
   anchor="Definition of done - MANDATORY custom delivery workflow"
   n=0
-  for shape in rule unterminated; do
+  for shape in rule unterminated blank-then-rule heading-then-rule underline-then-rule; do
     n=$((n + 1))
-    if [ "$shape" = rule ]; then
-      # A horizontal rule above the title, closed by a second rule further down.
-      cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+    case "$shape" in
+      rule)
+        # A horizontal rule above the title, closed by a second rule further down.
+        cat > "$home/data/project-flows/flowproj.md" <<'EOF'
 ---
 # flowproj custom delivery workflow
 
@@ -1317,9 +1364,58 @@ test_custom_flow_note_leading_dashes_still_demote_headings() {
 
 ---
 EOF
-    else
-      # A front-matter block the captain never terminated.
-      cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+        ;;
+      blank-then-rule)
+        # Keys, then a blank line, then the note - and a horizontal rule further
+        # down that an unbounded terminator search reads as the block's close.
+        cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+---
+owner: captain
+updated: 2026-08-06
+
+# flowproj custom delivery workflow
+
+## Flow
+
+1. Open the DRAFT PR, then present the local preview.
+
+---
+
+Notes at the bottom.
+EOF
+        ;;
+      heading-then-rule)
+        # The same unclosed block written compactly, with no blank line anywhere
+        # above the later rule, so only the heading itself can bound the region.
+        cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+---
+owner: captain
+# flowproj custom delivery workflow
+## Flow
+1. Open the DRAFT PR, then present the local preview.
+---
+Notes at the bottom.
+EOF
+        ;;
+      underline-then-rule)
+        # The same compact shape written entirely in underline headings, so no ATX
+        # heading appears before the later rule and only the underline can bound
+        # the region.
+        cat > "$home/data/project-flows/flowproj.md" <<'EOF'
+---
+owner: captain
+flowproj custom delivery workflow
+================================
+Flow
+----
+1. Open the DRAFT PR, then present the local preview.
+---
+Notes at the bottom.
+EOF
+        ;;
+      *)
+        # A front-matter block the captain never terminated.
+        cat > "$home/data/project-flows/flowproj.md" <<'EOF'
 ---
 owner: captain
 # flowproj custom delivery workflow
@@ -1328,7 +1424,8 @@ owner: captain
 
 1. Open the DRAFT PR, then present the local preview.
 EOF
-    fi
+        ;;
+    esac
     id="brief-flow-frontmatter-$n"
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
@@ -1412,6 +1509,61 @@ EOF
   assert_line " ###### already at the floor" "$brief" \
     "an H6 heading was pushed past the H6 floor markdown has no level for"
   pass "fm-brief.sh: an indented ATX note heading is demoted, code blocks and hashtags are not"
+}
+
+# Two more shapes a captain-authored note can carry, each of which markdown renders
+# as a top-level heading and each of which therefore closes the anchor section if it
+# escapes demotion: a tab rather than a space after the hashes, and a note written
+# with CRLF line endings whose underline heading sits past a carriage return.
+test_custom_flow_note_tab_and_crlf_headings_are_demoted() {
+  local home id brief anchor
+  home="$TMP_ROOT/flow-note-whitespace-home"
+  mkdir -p "$home/data/project-flows"
+  printf -- '- flowproj [no-mistakes] - flow project (added 2026-08-06)\n' > "$home/data/projects.md"
+  anchor="Definition of done - MANDATORY custom delivery workflow"
+
+  # A tab after the hashes opens an ATX heading in CommonMark exactly as a space
+  # does. The hashtag passthrough must survive it: `#tag` has no whitespace at all.
+  printf '#\tflowproj custom delivery workflow\n\n##\tFlow\n\n1. Open the DRAFT PR, then present the local preview.\n\n#flowproj is a hashtag, not a heading\n' \
+    > "$home/data/project-flows/flowproj.md"
+  id="brief-flow-tab-heading"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief with a tab-separated note heading was not scaffolded"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "a tab-separated note heading stranded the \`done:\` gate outside the section rule 5 names"
+  assert_one_dod "$brief" "custom-flow brief with a tab-separated note heading"
+  assert_line "##${TAB}flowproj custom delivery workflow" "$brief" \
+    "a tab-separated top-level heading escaped demotion"
+  assert_line "###${TAB}Flow" "$brief" \
+    "a tab-separated section heading escaped demotion"
+  assert_no_line "#${TAB}flowproj custom delivery workflow" "$brief" \
+    "the tab-separated top-level heading survived and still closes the Definition of done section"
+  assert_line "#flowproj is a hashtag, not a heading" "$brief" \
+    "a hashtag with no whitespace after the hashes was rewritten as a heading"
+
+  # A CRLF note: the underline rules anchor at end of line, so a carriage return
+  # left in place hides the underline and leaves the note's H1 standing.
+  printf 'flowproj custom delivery workflow\r\n================================\r\n\r\nflowproj ships through this flow.\r\n\r\n1. Open the DRAFT PR, then present the local preview.\r\n' \
+    > "$home/data/project-flows/flowproj.md"
+  id="brief-flow-crlf-heading"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" flowproj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "custom-flow brief with a CRLF note was not scaffolded"
+  assert_gate_under_anchor "$brief" "$anchor" \
+    "a CRLF note heading stranded the \`done:\` gate outside the section rule 5 names"
+  assert_one_dod "$brief" "custom-flow brief with a CRLF note"
+  assert_line "## flowproj custom delivery workflow" "$brief" \
+    "a CRLF underline-style top-level heading escaped demotion"
+  assert_no_line "================================${CR}" "$brief" \
+    "the CRLF note's heading underline survived and still closes the Definition of done section"
+  assert_no_line "flowproj custom delivery workflow${CR}" "$brief" \
+    "the CRLF note's heading text was left as bare prose above its underline"
+  assert_no_line "flowproj custom delivery workflow" "$brief" \
+    "the CRLF note's heading text was left as bare prose with its carriage return stripped"
+  assert_line "1. Open the DRAFT PR, then present the local preview." "$brief" \
+    "the CRLF note lost its flow steps, or kept a carriage return the brief has no use for"
+  pass "fm-brief.sh: tab-separated and CRLF note headings are demoted under the anchor"
 }
 
 # The completion bridge must not send a review-ready handoff to the pause verb.
@@ -1735,6 +1887,7 @@ test_custom_flow_note_with_its_own_headings_keeps_the_gate_under_the_anchor
 test_custom_flow_note_with_underline_headings_keeps_the_gate_under_the_anchor
 test_custom_flow_note_leading_dashes_still_demote_headings
 test_custom_flow_note_indented_headings_are_demoted
+test_custom_flow_note_tab_and_crlf_headings_are_demoted
 test_custom_flow_bridge_escalates_a_human_handoff_instead_of_pausing
 test_custom_flow_bridge_keeps_the_pr_url_on_the_status_line
 test_custom_flow_note_leaves_scout_and_secondmate_briefs_byte_identical

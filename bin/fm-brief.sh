@@ -477,17 +477,26 @@ DOD=${DOD%$'\n'}
 # untouched so a shell comment inside a fence is never mistaken for a heading and
 # a front-matter delimiter is never read as an underline, and H6 is the floor
 # because markdown has no H7.
-# Front matter is recognized only when the whole shape is present: a leading
-# `---`, a YAML key on the next line, and a real `---`/`...` terminator later in
-# the file. Treating any leading `---` as an opener silently disabled demotion
-# for the entire note whenever the captain opened one with a horizontal rule or
-# left a block unterminated, which put the note's own top-level heading back in
-# the position that closes the anchor section. The buffered two-pass form is what
-# makes the terminator knowable before the first line is emitted.
-# An ATX heading indented one to three spaces is a heading in CommonMark, so it
-# is demoted (and its indent normalized) rather than escaping through the
-# passthrough rules at its original level; four spaces is an indented code block
-# and a `#` with no following space is a hashtag, and both still pass through.
+# Front matter is recognized only when the whole shape is present AND the region
+# is bounded the way real front matter is: a leading `---`, a YAML key on the next
+# line, then a run of lines that could each be metadata, closed by a real
+# `---`/`...` terminator. A markdown heading ends that search unclosed, in either
+# heading style, so no line markdown would render as a top-level heading can ever
+# sit inside a passed-through region. Treating any leading `---` as an opener, or
+# letting the terminator search run to end of file, silently disabled demotion for
+# a whole prefix whenever the captain opened a note with a horizontal rule or left
+# a block unterminated above a later rule, which put the note's own top-level
+# heading back in the position that closes the anchor section. The buffered
+# two-pass form is what makes the bounded region knowable before the first line is
+# emitted.
+# ATX headings are matched on a space or a tab after the hashes, and one to three
+# leading spaces still open a heading in CommonMark, so both shapes are demoted
+# (with the indent normalized) rather than escaping through the passthrough rules
+# at their original level; four spaces is an indented code block and a `#` run
+# with no following whitespace is a hashtag, and both still pass through.
+# A trailing carriage return is stripped from every line, because a CRLF note
+# otherwise defeats the underline rules - their end anchors cannot match past the
+# `\r` - and leaves the note's own underline heading standing at top level.
 fm_brief_demote_headings() {
   awk '
     function flush() { if (held) { print hold; held = 0 } }
@@ -498,12 +507,19 @@ fm_brief_demote_headings() {
       printf "%s %s\n", hashes, text
       held = 0
     }
-    { line[NR] = $0 }
+    function atx(text,   n) {
+      n = 0
+      while (n < 3 && substr(text, 1, 1) == " ") { text = substr(text, 2); n++ }
+      if (text ~ /^#+[ \t]/) return text
+      return ""
+    }
+    { sub(/\r$/, "", $0); line[NR] = $0 }
     END {
       front_end = 0
       if (NR >= 3 && line[1] ~ /^---[ \t]*$/ && line[2] ~ /^[A-Za-z_][A-Za-z0-9_.-]*:([ \t]|$)/) {
         for (i = 3; i <= NR; i++) {
           if (line[i] ~ /^(---|\.\.\.)[ \t]*$/) { front_end = i; break }
+          if (atx(line[i]) != "" || line[i] ~ /^[ \t]*=+[ \t]*$/) break
         }
       }
       for (i = 1; i <= NR; i++) {
@@ -514,10 +530,12 @@ fm_brief_demote_headings() {
         if (held && text ~ /^[ \t]*=+[ \t]*$/) { setext("##"); continue }
         if (held && text ~ /^[ \t]*-+[ \t]*$/) { setext("###"); continue }
         flush()
-        atx = text
-        indent = 0
-        while (indent < 3 && substr(atx, 1, 1) == " ") { atx = substr(atx, 2); indent++ }
-        if (atx ~ /^#+ / && index(atx, " ") <= 6) { sub(/^#/, "##", atx); print atx; continue }
+        heading = atx(text)
+        if (heading != "") {
+          match(heading, /^#+/)
+          if (RLENGTH < 6) { sub(/^#/, "##", heading); print heading } else { print text }
+          continue
+        }
         if (text ~ /^[ \t]*$/ || text ~ /^[ \t]*#/) { print text; continue }
         if (text ~ /^[ \t]*([-*+>|]|[0-9]+[.)])([ \t]|$)/ || text ~ /^([ ]{4}|\t)/) { print text; continue }
         hold = text
