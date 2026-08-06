@@ -738,8 +738,15 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 40 || fail "captain-held dead-agent pane did not re-surface on the bounded cadence"
-  grep -F "awaiting external" "$state/.wake-queue" >/dev/null \
+  # The bounded cadence must name the CAPTAIN, not an external wait: a filed
+  # captain hold does not clear on its own, so borrowing the declared-pause
+  # wording would report review-ready work as a quiet external delay.
+  grep -F "awaiting the captain" "$state/.wake-queue" >/dev/null \
     || fail "captain-held dead-agent pane surfaced as a stopped crew"
+  grep -F "awaiting external" "$state/.wake-queue" >/dev/null \
+    && fail "captain-held recheck described a filed captain hold as an external wait"
+  grep -F "possible wedge" "$state/.wake-queue" >/dev/null \
+    && fail "captain-held recheck was mislabeled a possible wedge"
 
   dir=$(make_case alive-decision-gate); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/gate.status"
@@ -1552,6 +1559,346 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
+# --- busy-but-frozen crew: evidence, and a bounded repeat cadence ------------
+#
+# 2026-08-04 incident: a HEALTHY crew blocked in one long synchronous
+# `no-mistakes axi respond` call wedge-escalated seven times in a row. That call
+# writes nothing in the worktree because the daemon owns the pipeline's files, so
+# the two signals a supervisor naturally reaches for - recent worktree writes and a
+# changing pane - are both absent for a perfectly healthy crew. The discriminator
+# that did work was the shared daemon's cumulative CPU time between wakes.
+
+# A seam script whose reading a test controls through a file, so the evidence path
+# is exercised without faking `ps` (which the lock layer uses for real decisions).
+make_nm_cpu_seam() {  # <dir> -> path
+  local dir=$1
+  printf '0:00.00 pid 4242\n' > "$dir/nm-cpu"
+  cat > "$dir/nm-cpu-exec" <<'SH'
+#!/usr/bin/env bash
+cat "$(dirname "$0")/nm-cpu"
+SH
+  chmod +x "$dir/nm-cpu-exec"
+  printf '%s\n' "$dir/nm-cpu-exec"
+}
+
+# Shared fixture: a provably-busy crew whose completed-turn marker is far past the
+# bound, primed so the next poll routes it through the busy turn-age escalation.
+setup_busy_over_bound() {  # <name> -> "<dir> <state> <fakebin> <window> <key>"
+  local name=$1 dir state fakebin window key
+  dir=$(make_case "$name"); state="$dir/state"; fakebin="$dir/fakebin"
+  window="test:fm-$name"
+  printf 'Working...' > "$dir/pane.txt"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy.meta"
+  record_pi_busy "$state" busy
+  printf 'working: driving the pipeline gate\n' > "$state/busy.status"
+  printf '%s' "$(seen_sig "$state/busy.status")" > "$state/.seen-busy_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  printf '%s' "$(hash_text "Working...")" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  touch -t 200001010000 "$state/busy.turn-ended"
+  prime_turnend_seen "$state/busy.turn-ended"
+  printf '%s %s %s %s %s\n' "$dir" "$state" "$fakebin" "$window" "$key"
+}
+
+busy_cycle() {  # <dir> <state> <fakebin> <window> [extra VAR=val...]
+  local dir=$1 state=$2 fakebin=$3 window=$4 pid
+  shift 4
+  env "PATH=$fakebin:$PATH" "FM_FAKE_TMUX_WINDOW=$window" "FM_FAKE_TMUX_CAPTURE=$dir/pane.txt" \
+    "FM_STATE_OVERRIDE=$state" FM_BUSY_TURN_MAX_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$@" "$WATCH" > "$dir/out" 2>&1 &
+  pid=$!
+  if wait_live "$pid" 30; then reap "$pid"; return 1; fi
+  wait "$pid" 2>/dev/null || true
+  return 0
+}
+
+test_busy_turn_escalation_carries_pipeline_progress_evidence() {
+  local fx dir state fakebin window key seam
+  fx=$(setup_busy_over_bound busy-progress-evidence)
+  # shellcheck disable=SC2086 # deliberate word split of the fixture's five fields.
+  set -- $fx; dir=$1; state=$2; fakebin=$3; window=$4; key=$5
+  seam=$(make_nm_cpu_seam "$dir")
+
+  busy_cycle "$dir" "$state" "$fakebin" "$window" FM_STALE_ESCALATE_SECS=999 \
+    "FM_NM_DAEMON_CPU_EXEC=$seam" \
+    && fail "priming round for the busy turn-age escalation was not absorbed: $(cat "$dir/out")"
+
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  busy_cycle "$dir" "$state" "$fakebin" "$window" FM_STALE_ESCALATE_SECS=240 \
+    "FM_NM_DAEMON_CPU_EXEC=$seam" \
+    || fail "the first busy turn-age escalation did not fire: $(cat "$dir/out")"
+  grep -F "0:00.00 pid 4242" "$dir/out" >/dev/null \
+    || fail "the escalation payload carried no pipeline-progress reading: $(cat "$dir/out")"
+  grep -F "first reading" "$dir/out" >/dev/null \
+    || fail "the first escalation did not label its reading as the baseline: $(cat "$dir/out")"
+
+  # Same reading on the next escalation: nothing progressed anywhere.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  busy_cycle "$dir" "$state" "$fakebin" "$window" FM_STALE_ESCALATE_SECS=240 \
+    "FM_NM_DAEMON_CPU_EXEC=$seam" \
+    || fail "the second busy turn-age escalation did not fire: $(cat "$dir/out")"
+  grep -F "UNCHANGED since the last escalation" "$dir/out" >/dev/null \
+    || fail "an unchanged pipeline reading was not reported as unchanged: $(cat "$dir/out")"
+
+  # An advanced reading: the crew is blocked on work that IS progressing, which is
+  # exactly the healthy case a frozen pane and no worktree writes cannot show.
+  printf '0:12.44 pid 4242\n' > "$dir/nm-cpu"
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  busy_cycle "$dir" "$state" "$fakebin" "$window" FM_STALE_ESCALATE_SECS=240 \
+    "FM_NM_DAEMON_CPU_EXEC=$seam" \
+    || fail "the third busy turn-age escalation did not fire: $(cat "$dir/out")"
+  grep -F "the pipeline IS working" "$dir/out" >/dev/null \
+    || fail "an advanced pipeline reading was not reported as progress: $(cat "$dir/out")"
+  grep -F "not evidence of a hang" "$dir/out" >/dev/null \
+    || fail "the progress evidence did not say what it rules out: $(cat "$dir/out")"
+  # Evidence must never replace detection: this is still a possible-wedge escalation.
+  grep -F "possible wedge" "$dir/out" >/dev/null \
+    || fail "carrying progress evidence suppressed the wedge escalation itself: $(cat "$dir/out")"
+  pass "a busy crew past the turn bound escalates with the pipeline-progress reading that distinguishes a blocked-but-working crew from a hang"
+}
+
+test_busy_turn_escalation_backs_off_after_demand_inspection() {
+  local fx dir state fakebin window key seam
+  fx=$(setup_busy_over_bound busy-backoff)
+  # shellcheck disable=SC2086 # deliberate word split of the fixture's five fields.
+  set -- $fx; dir=$1; state=$2; fakebin=$3; window=$4; key=$5
+  seam=$(make_nm_cpu_seam "$dir")
+
+  busy_cycle "$dir" "$state" "$fakebin" "$window" FM_STALE_ESCALATE_SECS=999 \
+    "FM_NM_DAEMON_CPU_EXEC=$seam" \
+    && fail "priming round for the back-off case was not absorbed: $(cat "$dir/out")"
+
+  # Three escalations already delivered, so the supervisor has been told - and told
+  # prominently, with demand-deep-inspection. A further wake every few minutes adds
+  # nothing it has not read, and that repetition is what made a healthy crew look
+  # hung. Aged past the prompt threshold but below the long one: must NOT escalate.
+  printf '3\n' > "$state/.wedge-escalations-$key"
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  busy_cycle "$dir" "$state" "$fakebin" "$window" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=3600 "FM_NM_DAEMON_CPU_EXEC=$seam" \
+    && fail "a busy crew kept escalating every prompt interval after demand-deep-inspection: $(cat "$dir/out")"
+
+  # It must never go silent, though: past the long cadence it escalates again.
+  echo $(( $(date +%s) - 5000 )) > "$state/.stale-since-$key"
+  busy_cycle "$dir" "$state" "$fakebin" "$window" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=3600 "FM_NM_DAEMON_CPU_EXEC=$seam" \
+    || fail "a busy crew past the long cadence stopped escalating altogether: $(cat "$dir/out")"
+  grep -F "escalation 4" "$dir/out" >/dev/null \
+    || fail "the backed-off escalation lost its running count: $(cat "$dir/out")"
+  grep -F "demand-deep-inspection" "$dir/out" >/dev/null \
+    || fail "the backed-off escalation dropped its demand-deep-inspection marker: $(cat "$dir/out")"
+  pass "past demand-deep-inspection a busy crew's turn-age escalation moves to the long cadence and still never goes silent"
+}
+
+# --- parked-fleet repaint loop ----------------------------------------------
+#
+# A crew that has finished, or parked awaiting the captain, leaves an IDLE pane -
+# and an idle harness pane is not byte-static: its own footer readout (context
+# left, token count, a clock) keeps ticking, so every poll sees a fresh pane hash.
+# The .stale-<key> "already classified this stale episode" suppressor is keyed on
+# that hash, so each tick re-opened a closed episode and re-emitted the bare,
+# information-free "stale: <window>" for a status firstmate had already been woken
+# for. With a fleet of such crews the first window in glob order monopolized every
+# cycle (the loop exits at the first wake), so the others were never even triaged.
+# These cases pin the fix - dedupe on the STATUS firstmate was woken for, never on
+# the repaint - and, just as importantly, pin that a genuinely stuck crew still
+# surfaces and a rotting one still wedge-escalates.
+
+# Drive one supervision cycle over a fleet case: the watcher runs until it either
+# ends on an actionable wake or proves it is absorbing, exactly as one real
+# arm-watch-exit cycle does. Appends any printed reason to <dir>/out.
+# Runs through `env` deliberately: a VAR=val word that arrives by "$@" expansion is
+# NOT recognized as an assignment prefix (assignment recognition happens at parse
+# time, on literal words), so a caller's per-case knob would silently become the
+# command instead. `env` consumes every assignment word, including the expanded ones.
+fleet_cycle() {  # <dir> <state> <fakebin> <windows> [extra VAR=val...]
+  local dir=$1 state=$2 fakebin=$3 windows=$4 pid
+  shift 4
+  env "PATH=$fakebin:$PATH" "FM_FAKE_WINDOWS=$windows" "FM_FAKE_PANE_DIR=$dir/panes" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    "FM_STATE_OVERRIDE=$state" "FM_CREW_STATE_BIN=$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$@" "$WATCH" >> "$dir/out" 2>&1 &
+  pid=$!
+  if wait_live "$pid" 25; then reap "$pid"; else wait "$pid" 2>/dev/null || true; fi
+}
+
+# Always prints a number: an absent queue is zero wakes, not an empty string that
+# would turn a real count assertion into an "integer expression expected" error.
+stale_wakes_for() {  # <state> <window>
+  [ -e "$1/.wake-queue" ] || { printf '0'; return 0; }
+  awk -F '\t' -v w="$2" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' \
+    "$1/.wake-queue"
+}
+
+test_parked_fleet_repaint_does_not_reopen_surfaced_stale() {
+  local dir state fakebin windows id w statusf total n
+  dir=$(make_fleet_case parked-fleet-repaint); state="$dir/state"; fakebin="$dir/fakebin"
+  windows=""
+  for id in alpha bravo charlie; do
+    w="test:fm-$id"
+    windows="$windows $w"
+    printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$w" > "$state/$id.meta"
+    statusf="$state/$id.status"
+    # Implementation finished, decision posted, now idle awaiting the captain.
+    printf 'working: implementing\nneeds-decision [key=q1]: option A or option B?\n' > "$statusf"
+    printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-${id}_status"
+  done
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at ask_user gate: 3 finding(s) (ask-user: authority decision)'
+
+  local round=1
+  while [ "$round" -le 9 ]; do
+    for id in alpha bravo charlie; do
+      # One tick of each pane's own readout per cycle: a new hash, no new news.
+      fleet_pane "$dir" "$state" "test:fm-$id" \
+        "> │  accept edits on          Context left: $((99 - round))%"
+    done
+    fleet_cycle "$dir" "$state" "$fakebin" "$windows" \
+      FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+    round=$((round + 1))
+  done
+
+  for id in alpha bravo charlie; do
+    n=$(stale_wakes_for "$state" "test:fm-$id")
+    [ "$n" -eq 1 ] || fail "parked crew $id produced $n stale wakes across 9 repaint cycles (expected exactly 1)"
+  done
+  total=$(awk -F '\t' '$3 == "stale" { n++ } END { print n + 0 }' "$state/.wake-queue")
+  [ "$total" -eq 3 ] || fail "a 3-crew parked fleet produced $total stale wakes across 9 repaint cycles (expected 3)"
+  unset FM_FAKE_CREW_STATE
+  pass "each parked crew's captain status surfaces exactly once; pane repaints never re-open it, so no crew monopolizes the cycle"
+}
+
+test_repaint_absorb_still_escalates_unacted_captain_status() {
+  local dir state fakebin w key
+  dir=$(make_fleet_case repaint-still-wedges); state="$dir/state"; fakebin="$dir/fakebin"
+  w="test:fm-rot"; key=$(fleet_key "$w")
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$w" > "$state/rot.meta"
+  printf 'needs-decision [key=q1]: option A or option B?\n' > "$state/rot.status"
+  printf '%s' "$(seen_sig "$state/rot.status")" > "$state/.seen-rot_status"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at ask_user gate'
+
+  fleet_pane "$dir" "$state" "$w" "idle  ctx 99%"
+  fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+  grep -Fx "stale: $w" "$dir/out" >/dev/null || fail "the first sighting of a parked captain status did not surface"
+  fleet_pane "$dir" "$state" "$w" "idle  ctx 98%"
+  fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+
+  # Age the ONE timer that must now span this idle wait, exactly as elapsed time
+  # would, then repaint again. Aging is conditional so a fix that never started a
+  # timer is reported by the escalation assertion below - the observable behavior -
+  # rather than by a marker precondition that stops the case early.
+  if [ -e "$state/.stale-since-$key" ]; then
+    printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  fi
+  fleet_pane "$dir" "$state" "$w" "idle  ctx 97%"
+  fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+  grep -F "possible wedge" "$dir/out" >/dev/null \
+    || fail "an unacted-on captain status stopped wedge-escalating after a repaint: $(cat "$dir/out")"
+  grep -F "escalation 1" "$dir/out" >/dev/null \
+    || fail "the repaint escalation lost its escalation count"
+  # The escalation must report the AGED idle time, proving the repaint did not
+  # reset the timer and push the escalation out of reach.
+  grep -E "idle (49[0-9]|5[0-9][0-9])s" "$dir/out" >/dev/null \
+    || fail "the repaint reset the wedge timer instead of letting one span the whole idle wait: $(cat "$dir/out")"
+  unset FM_FAKE_CREW_STATE
+  pass "an unacted-on captain status is absorbed on repaint but still wedge-escalates with its age and count"
+}
+
+test_repaint_absorb_never_hides_a_new_captain_status() {
+  local dir state fakebin w before after
+  dir=$(make_fleet_case repaint-new-status); state="$dir/state"; fakebin="$dir/fakebin"
+  w="test:fm-new"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$w" > "$state/new.meta"
+  printf 'needs-decision [key=q1]: option A or option B?\n' > "$state/new.status"
+  printf '%s' "$(seen_sig "$state/new.status")" > "$state/.seen-new_status"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at ask_user gate'
+
+  fleet_pane "$dir" "$state" "$w" "idle  ctx 99%"
+  fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+  fleet_pane "$dir" "$state" "$w" "idle  ctx 98%"
+  fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+  before=$(stale_wakes_for "$state" "$w")
+
+  # A genuinely NEW captain-relevant line. The signal suppressor is primed to the
+  # new signature so ONLY the stale path can surface it - the dedupe must key on
+  # the status content, so a different line is news even on a repainting pane.
+  printf 'blocked: the credential store rejected the token\n' >> "$state/new.status"
+  printf '%s' "$(seen_sig "$state/new.status")" > "$state/.seen-new_status"
+  fleet_pane "$dir" "$state" "$w" "idle  ctx 97%"
+  fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+  after=$(stale_wakes_for "$state" "$w")
+  [ "$after" -gt "$before" ] || fail "a new captain-relevant status was suppressed as an already-surfaced repaint"
+  unset FM_FAKE_CREW_STATE
+  pass "a new captain-relevant status still surfaces at once; the repaint dedupe keys on the status, not the pane"
+}
+
+test_undeclared_idle_crew_still_surfaces_every_repaint() {
+  local dir state fakebin w n
+  dir=$(make_fleet_case undeclared-idle); state="$dir/state"; fakebin="$dir/fakebin"
+  w="test:fm-stuck"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$w" > "$state/stuck.meta"
+  # No captain-relevant verb and no declared wait: the crew went quiet on its own.
+  printf 'working: refactoring the parser\n' > "$state/stuck.status"
+  printf '%s' "$(seen_sig "$state/stuck.status")" > "$state/.seen-stuck_status"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  local round=1
+  while [ "$round" -le 3 ]; do
+    fleet_pane "$dir" "$state" "$w" "half-drawn output   tick $round"
+    fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+    round=$((round + 1))
+  done
+  n=$(stale_wakes_for "$state" "$w")
+  [ "$n" -eq 3 ] || fail "an undeclared idle crew surfaced $n times across 3 repaints (expected 3 - wedge detection must be untouched)"
+  unset FM_FAKE_CREW_STATE
+  pass "a crew that went quiet without declaring anything still surfaces on every repaint - the repaint dedupe never covers it"
+}
+
+test_live_captain_held_pane_uses_bounded_captain_cadence() {
+  local dir state fakebin w back n
+  dir=$(make_fleet_case live-captain-held); state="$dir/state"; fakebin="$dir/fakebin"
+  w="test:fm-held"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$w" > "$state/held.meta"
+  # bin/fm-decision-hold.sh writes this verb only after proving a captain-held
+  # backlog row carries the decision, so the captain's visibility no longer
+  # depends on this pane waking firstmate - even with the agent still LIVE.
+  printf 'captain-held [key=q1]: tracked by held-q1-decision\n' > "$state/held.status"
+  back=$(( $(date +%s) - 60 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$state/held.status"
+  else touch -m -d "@$back" "$state/held.status"; fi
+  printf '%s' "$(seen_sig "$state/held.status")" > "$state/.seen-held_status"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at ask_user gate'
+  local round=1
+  while [ "$round" -le 5 ]; do
+    fleet_pane "$dir" "$state" "$w" "idle  ctx $((99 - round))%"
+    fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=3600 FM_STALE_ESCALATE_SECS=240
+    round=$((round + 1))
+  done
+  n=$(stale_wakes_for "$state" "$w")
+  [ "$n" -eq 0 ] || fail "a filed captain hold on a LIVE idle pane produced $n stale wakes across 5 repaints (expected 0)"
+  grep -F "awaiting the captain" "$state/.watch-triage.log" >/dev/null \
+    || fail "the captain-hold absorb was not logged as awaiting the captain"
+  grep -F "awaiting external" "$state/.watch-triage.log" >/dev/null \
+    && fail "a filed captain hold was logged as an external wait"
+
+  # It must not rot: past the long cadence it re-surfaces once, naming the CAPTAIN
+  # rather than an external wait that clears on its own, and never as a wedge.
+  back=$(( $(date +%s) - 5000 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$state/held.status"
+  else touch -m -d "@$back" "$state/held.status"; fi
+  printf '%s' "$(seen_sig "$state/held.status")" > "$state/.seen-held_status"
+  rm -f "$state/.paused-resurfaced-$(fleet_key "$w")"
+  : > "$dir/out"
+  fleet_pane "$dir" "$state" "$w" "idle  ctx 40%"
+  fleet_cycle "$dir" "$state" "$fakebin" "$w" FM_PAUSE_RESURFACE_SECS=240 FM_STALE_ESCALATE_SECS=240
+  grep -F "awaiting the captain" "$dir/out" >/dev/null \
+    || fail "a forgotten captain hold did not re-surface on the long cadence: $(cat "$dir/out")"
+  grep -F "possible wedge" "$dir/out" >/dev/null \
+    && fail "a forgotten captain hold re-surfaced as a possible wedge"
+  unset FM_FAKE_CREW_STATE
+  pass "a filed captain hold keeps a LIVE idle pane on the bounded captain cadence and still re-surfaces before it can rot"
+}
+
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
@@ -1592,3 +1939,10 @@ test_heartbeat_backstop_surfaces_unsurfaced_status
 test_beacon_stays_fresh_while_absorbing
 test_afk_present_reverts_watcher_to_one_shot
 test_afk_paused_changed_pane_hands_off_plain_stale
+test_busy_turn_escalation_carries_pipeline_progress_evidence
+test_busy_turn_escalation_backs_off_after_demand_inspection
+test_parked_fleet_repaint_does_not_reopen_surfaced_stale
+test_repaint_absorb_still_escalates_unacted_captain_status
+test_repaint_absorb_never_hides_a_new_captain_status
+test_undeclared_idle_crew_still_surfaces_every_repaint
+test_live_captain_held_pane_uses_bounded_captain_cadence

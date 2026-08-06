@@ -34,7 +34,8 @@ sleep() { printf 'SLEEP\n' >> "$SLEEP_LOG"; }
 reset_state() {
   rm -f "$STATE_DIR"/*.meta "$STATE_DIR"/*.status "$STATE_DIR"/.wake-queue \
     "$STATE_DIR"/.wake-queue.seq "$STATE_DIR"/.watch-triage.log \
-    "$STATE_DIR"/.herdr-escalated-* "$TMP"/panes "$TMP"/wtcalls "$TMP"/wtcalled 2>/dev/null || true
+    "$STATE_DIR"/.herdr-escalated-* "$STATE_DIR"/.hb-surfaced-* \
+    "$TMP"/panes "$TMP"/wtcalls "$TMP"/wtcalled 2>/dev/null || true
   : > "$WAKE_LOG"
   : > "$SLEEP_LOG"
   _event_cap_key=""
@@ -81,6 +82,39 @@ fi
 [ ! -s "$WAKE_LOG" ] || fail "a declared-pause crew must not wake the supervisor from the event fast-path"
 grep -q 'absorbed push' "$STATE_DIR/.watch-triage.log" 2>/dev/null || fail "the paused absorb should be logged to the triage log"
 pass "handle_push_transition: a declared-pause crew is absorbed (no fast wake), left to the poll loop's long cadence"
+
+# --- handle_push_transition: the already-surfaced captain status is absorbed ---
+#
+# The push path escalates a waiting-on-human transition IMMEDIATELY rather than
+# through the wedge timer, so without a dedupe it is a second door onto the very
+# duplicate wake the poll path suppresses: a crew parked on a captain status
+# firstmate was already woken for would re-escalate on every agent_status flap.
+
+reset_state
+fm_write_meta "$STATE_DIR/tk6.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship"
+printf 'needs-decision [key=q1]: option A or option B?\n' > "$STATE_DIR/tk6.status"
+mark_surfaced "$STATE_DIR/tk6.status"
+handle_push_transition herdr default "$(mkrec wG:pQ blocked)"
+if [ -e "$STATE_DIR/.wake-queue" ] && grep -q 'stale' "$STATE_DIR/.wake-queue"; then
+  fail "a captain status firstmate was already woken for must NOT be fast-escalated again: $(cat "$STATE_DIR/.wake-queue")"
+fi
+[ ! -s "$WAKE_LOG" ] || fail "an already-surfaced captain status must not wake the supervisor from the event fast-path"
+grep -q 'absorbed push' "$STATE_DIR/.watch-triage.log" 2>/dev/null \
+  || fail "the already-surfaced absorb should be logged to the triage log"
+pass "handle_push_transition: a captain status already surfaced to firstmate is absorbed instead of re-escalated"
+
+# The disconfirming case: a DIFFERENT captain-relevant line is news, so the
+# immediate escalation this fast-path exists for must still fire.
+reset_state
+fm_write_meta "$STATE_DIR/tk7.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship"
+printf 'needs-decision [key=q1]: option A or option B?\n' > "$STATE_DIR/tk7.status"
+mark_surfaced "$STATE_DIR/tk7.status"
+printf 'blocked: the credential store rejected the token\n' >> "$STATE_DIR/tk7.status"
+handle_push_transition herdr default "$(mkrec wG:pQ blocked)"
+grep -q 'stale' "$STATE_DIR/.wake-queue" 2>/dev/null \
+  || fail "a NEW captain-relevant status must still fast-escalate: $(cat "$STATE_DIR/.wake-queue" 2>/dev/null)"
+[ -s "$WAKE_LOG" ] || fail "a NEW captain-relevant status must still wake the supervisor immediately"
+pass "handle_push_transition: a new captain-relevant status still escalates at once - the dedupe keys on the exact surfaced line"
 
 # --- event_wait_or_sleep: secondmate windows are excluded from the pane list --
 

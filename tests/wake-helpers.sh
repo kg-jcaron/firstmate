@@ -116,6 +116,63 @@ SH
   printf '%s\n' "$fakebin/fm-crew-state.sh"
 }
 
+# make_fleet_case: a case whose fake tmux models a MULTI-crew home, which
+# make_case cannot - its inventory reports one window and its capture serves one
+# shared file, so only the first recorded crew reads as live with its own pane.
+# Here $FM_FAKE_WINDOWS lists every recorded window (so each crew's agent-liveness
+# probe finds its own window in the inventory) and each window captures from its
+# own $FM_FAKE_PANE_DIR/<key>.txt, where <key> is the window with ':', '/' and '.'
+# mapped to '_' exactly as bin/fm-watch.sh keys its own per-window markers. That is
+# what lets a test show a whole parked fleet's triage rather than one pane's, and
+# show which crews never get triaged at all when one monopolizes every cycle.
+make_fleet_case() {  # <name>
+  local name=$1 dir fakebin
+  dir="$TMP_ROOT/$name"
+  fakebin="$dir/fakebin"
+  mkdir -p "$dir/state" "$fakebin" "$dir/panes"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  list-windows)
+    for w in ${FM_FAKE_WINDOWS:-}; do printf '%s\n' "${w#*:}"; done
+    exit 0 ;;
+  capture-pane)
+    _t=""; shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in -t) _t="${2:-}"; shift 2; continue ;; *) shift ;; esac
+    done
+    _f="${FM_FAKE_PANE_DIR:-}/$(printf '%s' "$_t" | tr ':/.' '___').txt"
+    [ -f "$_f" ] && cat "$_f"
+    exit 0 ;;
+  display-message)
+    case "$*" in
+      *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_CURRENT_COMMAND:-}"; exit 0 ;;
+      *) printf 'fakepane\n'; exit 0 ;;
+    esac ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/tmux"
+  make_fake_crew_state "$fakebin" >/dev/null
+  printf '%s\n' "$dir"
+}
+
+# The per-window marker key bin/fm-watch.sh derives from a window target.
+fleet_key() { printf '%s' "$1" | tr ':/.' '___'; }
+
+# Put <body> on <window>'s pane and prime its hash/count so the watcher's NEXT
+# poll trips the ">= 2 consecutive identical hashes" stale test at that content.
+# Call once per simulated supervision cycle; a different body each time is how a
+# real idle harness pane behaves as its own footer readout ticks.
+fleet_pane() {  # <dir> <state> <window> <body>
+  local dir=$1 state=$2 w=$3 body=$4 key
+  key=$(fleet_key "$w")
+  printf '%s\n' "$body" > "$dir/panes/$key.txt"
+  printf '%s' "$(hash_text "$(printf '%s\n' "$body")")" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+}
+
 make_supercase() {
   local name=$1 dir fakebin
   dir="$TMP_ROOT/$name"

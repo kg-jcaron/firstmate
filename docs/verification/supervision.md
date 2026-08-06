@@ -198,6 +198,59 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+## Parked-worker wake loop
+
+Established 2026-08-04 against an isolated temporary home, a fake tmux inventory, and a canned `bin/fm-crew-state.sh` verdict, so no live fleet, backend, or no-mistakes install participates.
+The measured unit is one simulated supervision cycle: the watcher runs until it either ends on an actionable wake or demonstrably absorbs, exactly as one arm-watch-exit cycle does.
+Each cycle advances every parked pane's captured tail by one tick, which is what a real idle harness footer does on its own.
+
+| Fixture | Cycles | Stale wakes before | Stale wakes after |
+| --- | --- | --- | --- |
+| Three crews parked on an unchanged `needs-decision:`, live agents, ticking panes | 9 | 9, all for the first recorded window; the other two never triaged | 3, one per crew |
+| One crew under a durable `captain-held` transfer, live agent, ticking pane | 5 | 5 | 0, absorbed on the bounded captain cadence |
+
+A crew that is provably busy yet has completed no turn inside `FM_BUSY_TURN_MAX_SECS` is the mirror-image case, measured on the same kind of fixture with the daemon reading fixed through `FM_NM_DAEMON_CPU_EXEC`:
+
+| Escalation | Reading | Reported as |
+| --- | --- | --- |
+| 1 | `0:00.00 pid 4242` | first reading, baseline for the next escalation |
+| 2 | `0:00.00 pid 4242` | `UNCHANGED since the last escalation - no pipeline work in that window` |
+| 3 | `0:12.44 pid 4242` | `the pipeline IS working`, so a frozen pane and no worktree writes are not evidence of a hang |
+
+Every one of those escalations still carried `possible wedge`: the reading is reported, never used to absorb.
+With three escalations already delivered, a timer aged past `FM_STALE_ESCALATE_SECS` but below `FM_PAUSE_RESURFACE_SECS` produced no further wake, and the same timer aged past `FM_PAUSE_RESURFACE_SECS` escalated again as `escalation 4` still carrying `demand-deep-inspection`.
+
+Preserved detection, measured on the same fixtures:
+
+- A crew idle with no captain-relevant verb and no declared wait still surfaced on every one of 3 repaints.
+- An unacted-on captain status still escalated past `FM_STALE_ESCALATE_SECS` carrying `possible wedge` and `escalation 1`, from a single timer that pane churn does not reset.
+- A different captain-relevant line (`blocked:` appended after the absorb) still surfaced at once.
+- A `captain-held` transfer aged past `FM_PAUSE_RESURFACE_SECS` still re-surfaced once, naming the captain rather than an external wait, and never as a possible wedge.
+
+Deterministic entry points:
+
+```sh
+tests/fm-watch-triage.test.sh
+tests/fm-supervision-events.test.sh
+```
+
+Each new guard was proven able to fail: the fix it protects was removed by a single literal edit in a copy of the tree, the removal was verified to have landed, and the suite was re-run.
+Every guard failed with its fix removed.
+
+| Fix removed | Guard that failed |
+| --- | --- |
+| The terminal-stale already-surfaced branch | `parked crew alpha produced 9 stale wakes across 9 repaint cycles (expected exactly 1)` |
+| The live-agent exemption for a durable `captain-held` transfer | `a filed captain hold on a LIVE idle pane produced 5 stale wakes across 5 repaints (expected 0)` |
+| The push fast-path already-surfaced guard | `a captain status firstmate was already woken for must NOT be fast-escalated again` |
+| The wedge timer on an absorbed repaint | `an unacted-on captain status stopped wedge-escalating after a repaint` |
+| Comparing the surfaced marker's CONTENT rather than its presence | `a NEW captain-relevant status must still fast-escalate` |
+| `surface_nonterminal_stale` for an undeclared idle crew | `watcher did not surface a not-provably-working non-terminal stale at once` |
+| Deriving the captain-hold wording instead of reusing the external-wait wording | `captain-held dead-agent pane surfaced as a stopped crew` |
+| The pipeline-progress reading on a busy turn-age escalation | `the escalation payload carried no pipeline-progress reading` |
+| The long repeat cadence past demand-deep-inspection | `a busy crew kept escalating every prompt interval after demand-deep-inspection` |
+
+One failure in this family, `arm did not exit with HUP status (got 124)` in `tests/fm-watcher-lock.test.sh`, predates this work: a pristine checkout of the same base commit fails that identical assertion with the identical status on this machine.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.

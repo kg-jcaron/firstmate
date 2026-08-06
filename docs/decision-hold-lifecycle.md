@@ -19,6 +19,7 @@ It accepts `--none` as an explicit semantic inventory result, not as inferred ab
 It verifies every listed identity against tasks-axi before recording completion.
 For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` transfer event only after the matching backlog hold is durable.
 `bin/fm-classify-lib.sh` recognizes that transfer as closing the live status copy without claiming that the captain has answered it.
+`bin/fm-watch.sh` additionally treats it as proof that the captain's visibility no longer depends on the crew's endpoint, so an idle pane under a durable transfer moves to the bounded recheck cadence even while its agent is live, named as a captain wait rather than an external one; see [`architecture.md`](architecture.md#event-driven-supervision) for that supervision contract.
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 The `--force` path remains the explicit captain-approved discard escape hatch.

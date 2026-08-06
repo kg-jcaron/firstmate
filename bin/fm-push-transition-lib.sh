@@ -55,6 +55,22 @@ mark_surfaced() {  # <status-file>
   printf '%s' "$last" > "$(_hb_surfaced_path "$task")"
 }
 
+# The read side of that same marker, kept with mark_surfaced so one owner defines
+# the format: 0 when <task>'s CURRENT captain-relevant status line is the EXACT
+# line firstmate has already been woken for. Keyed on the status line's CONTENT,
+# so - unlike the watcher's .stale-<key> pane-hash suppressor - an idle pane
+# repainting (a ticking context readout, a token counter, a plain redraw) can never
+# make an already-delivered status look like news. Pure read, no side effects.
+status_already_surfaced() {  # <task>
+  local task=$1 last surfaced
+  [ -n "$task" ] || return 1
+  last=$(last_status_line "$STATE/$task.status")
+  [ -n "$last" ] || return 1
+  status_is_captain_relevant "$last" || return 1
+  surfaced=$(cat "$(_hb_surfaced_path "$task")" 2>/dev/null || true)
+  [ -n "$surfaced" ] && [ "$surfaced" = "$last" ]
+}
+
 # Act on a fresh actionable transition from a push-capable backend.
 handle_push_transition() {  # <backend> <session> <record>
   local backend=$1 session=$2 record=$3 pane_id to window task reason
@@ -65,6 +81,18 @@ handle_push_transition() {  # <backend> <session> <record>
   task=$(window_to_task "$window" "$STATE")
   if status_is_paused "$(last_status_line "$STATE/$task.status")"; then
     triage_log "absorbed push $to (declared pause, awaiting external): $window"
+    fm_backend_commit_transition "$backend" "$STATE" "$session" "$record" || exit 1
+    return
+  fi
+  # The native push escalates a waiting-on-human transition IMMEDIATELY rather
+  # than through the wedge timer, so without this guard it is a second door onto
+  # the same duplicate wake the poll path already suppresses: a crew parked on a
+  # captain status firstmate has already been woken for would re-escalate on every
+  # agent_status flap. Absorb only the exact already-delivered status; a genuinely
+  # NEW captain-relevant state has a different last line and still escalates at
+  # once.
+  if status_already_surfaced "$task"; then
+    triage_log "absorbed push $to (captain status already surfaced): $window"
     fm_backend_commit_transition "$backend" "$STATE" "$session" "$record" || exit 1
     return
   fi
