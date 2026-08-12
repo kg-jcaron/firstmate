@@ -152,13 +152,24 @@ status_is_paused_or_captain_held() {  # <status-line>
 # terminal line never clears an open captain decision.
 #
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
-# format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
-#   needs-decision [key=api-shape]: <summary>
-#   resolved       [key=api-shape]: <how it was decided>
+# format): an OPTIONAL "[key=<slug>]" token identifies which decision the line
+# opens or closes. The token is accepted on EITHER side of the colon, because
+# both placements are already on disk and both must keep parsing:
+#   needs-decision [key=api-shape]: <summary>          canonical; what tooling writes
+#   needs-decision: [key=api-shape] <summary>          equally valid; what workers write
+# The two forms are equivalent - same key, same summary - so a consumer never has
+# to know which one a worker used. Post-colon the token is recognized only when it
+# LEADS the note; a "[key=...]" further into the prose is prose, not grammar, so
+# "resolved: docs still mention [key=q1]" does not close q1. A line carrying a
+# token on both sides is keyed by the pre-colon one.
 # A line with no token uses the key "default", preserving the historical
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
-# The three parsers are pure reads of a single line; the verb parser strips any
-# key token before the colon so the leading word is recovered cleanly.
+# A leading token whose slug is malformed keys nothing: the line is skipped
+# entirely rather than folded into "default", so a typo cannot silently open or
+# close the unkeyed decision.
+# The parsers are pure reads of a single line; the verb parser strips any key
+# token before the colon so the leading word is recovered cleanly, and the note
+# parser strips a leading key token so the summary is the summary alone.
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
   v=${v%%\[key=*}
@@ -166,25 +177,61 @@ status_line_verb() {  # <status-line> -> leading verb word
   v=${v%"${v##*[![:space:]]}"}
   printf '%s' "$v"
 }
-status_line_note() {  # <status-line> -> text after the first colon, trimmed
+# Set _FM_STATUS_BODY to the text after the first colon, leading whitespace
+# trimmed and any key token still intact; to the whole line when there is no
+# colon. Assigns instead of printing, and every caller declares _FM_STATUS_BODY
+# local so bash's dynamic scoping keeps the write inside that call: the watcher's
+# per-line folds run this on every status line, so a subshell here would cost a
+# fork per line, and the library's no-globals property is preserved.
+_fm_status_line_body() {  # <status-line> -> sets the caller's _FM_STATUS_BODY
   case "$1" in
-    *:*) local n=${1#*:}; printf '%s' "${n#"${n%%[![:space:]]*}"}" ;;
-    *) printf '%s' "$1" ;;
+    *:*) _FM_STATUS_BODY=${1#*:}
+         _FM_STATUS_BODY=${_FM_STATUS_BODY#"${_FM_STATUS_BODY%%[![:space:]]*}"} ;;
+    *) _FM_STATUS_BODY=$1 ;;
   esac
 }
+# 0 when <candidate> is a well-formed decision key slug, 1 otherwise. The one
+# definition of slug validity, shared by the key parser and the note parser. A
+# predicate rather than a printer, for the same per-line fork cost above.
+_fm_key_is_slug() {  # <candidate>
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+}
+status_line_note() {  # <status-line> -> text after the first colon, minus a leading key token
+  local k rest _FM_STATUS_BODY
+  _fm_status_line_body "$1"
+  case "$_FM_STATUS_BODY" in
+    \[key=*\]*) ;;
+    *) printf '%s' "$_FM_STATUS_BODY"; return 0 ;;
+  esac
+  k=${_FM_STATUS_BODY#\[key=}
+  k=${k%%\]*}
+  # A malformed token is prose, not grammar, so the note keeps it verbatim.
+  _fm_key_is_slug "$k" || { printf '%s' "$_FM_STATUS_BODY"; return 0; }
+  rest=${_FM_STATUS_BODY#*\]}
+  printf '%s' "${rest#"${rest%%[![:space:]]*}"}"
+}
 _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local prefix=${1%%:*} k
+  local prefix=${1%%:*} k _FM_STATUS_BODY
   case "$prefix" in
     *\[key=*\]*)
       k=${prefix#*\[key=}
       k=${k%%\]*}
-      case "$k" in
-        ''|*[!A-Za-z0-9._-]*) return 1 ;;
-        *) printf '%s' "$k" ;;
+      ;;
+    *)
+      _fm_status_line_body "$1"
+      case "$_FM_STATUS_BODY" in
+        \[key=*\]*)
+          k=${_FM_STATUS_BODY#\[key=}
+          k=${k%%\]*}
+          ;;
+        *) printf 'default'; return 0 ;;
       esac
       ;;
-    *) printf 'default' ;;
   esac
+  _fm_key_is_slug "$k" || return 1
+  printf '%s' "$k"
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
 # Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.

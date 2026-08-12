@@ -221,6 +221,45 @@ EOF
   printf 'working: legacy start\ndone: legacy completion\n' > "$state/legacy-activity.status"
   [ -z "$(status_open_activities "$state/legacy-activity.status")" ] \
     || fail "a legacy terminal event did not supersede the default working phase"
+  # A key token AFTER the colon is the form workers naturally write, and it must key
+  # the same decision the canonical pre-colon form does. Two distinct post-colon
+  # decisions open at once used to collapse into one "default" record carrying only
+  # the second, silently dropping the first.
+  printf 'working: started\nneeds-decision: [key=deletion-volume] delete the legacy rows or gate them\nneeds-decision: [key=cert-grant] grant the cert scope now or defer\n' \
+    > "$state/post-colon.status"
+  open=$(status_open_decisions "$state/post-colon.status")
+  printf '%s' "$open" | grep -F $'deletion-volume\tneeds-decision\tdelete the legacy rows or gate them' >/dev/null \
+    || fail "the first of two post-colon keyed decisions was lost"
+  printf '%s' "$open" | grep -F $'cert-grant\tneeds-decision\tgrant the cert scope now or defer' >/dev/null \
+    || fail "the second of two post-colon keyed decisions was lost"
+  printf '%s' "$open" | grep -F $'default\t' >/dev/null \
+    && fail "a post-colon key token collapsed into the default bucket"
+  # Either placement yields the same key and the same summary, so the two forms
+  # close each other and a consumer never has to know which one a worker used.
+  [ "$(status_line_note 'needs-decision [key=api-shape]: 404 or 403')" = '404 or 403' ] \
+    || fail "the pre-colon note lost or gained text"
+  [ "$(status_line_note 'needs-decision: [key=api-shape] 404 or 403')" = '404 or 403' ] \
+    || fail "the post-colon note kept its key token instead of the summary alone"
+  [ "$(status_line_note 'resolved: docs still mention [key=q1]')" = 'docs still mention [key=q1]' ] \
+    || fail "a key token in note prose was stripped as grammar"
+  printf 'needs-decision: [key=api-shape] 404 or 403\nresolved [key=api-shape]: captain chose 404\n' \
+    > "$state/mixed-forms.status"
+  [ -z "$(status_open_decisions "$state/mixed-forms.status")" ] \
+    || fail "a pre-colon resolution did not close a post-colon decision under the same key"
+  printf 'needs-decision [key=api-shape]: 404 or 403\nresolved: [key=api-shape] captain chose 404\n' \
+    > "$state/mixed-forms.status"
+  [ -z "$(status_open_decisions "$state/mixed-forms.status")" ] \
+    || fail "a post-colon resolution did not close a pre-colon decision under the same key"
+  printf 'needs-decision: [key=bad key] malformed\n' > "$state/post-colon-bad.status"
+  [ -z "$(status_open_decisions "$state/post-colon-bad.status")" ] \
+    || fail "an invalid post-colon key slug entered the open-decision set"
+  printf 'working: [key=phase7] Phase 7 started\ndone: [key=phase7] Phase 7 finished\nworking: [key=phase8] Phase 8 started\n' \
+    > "$state/post-colon-activity.status"
+  activity=$(status_open_activities "$state/post-colon-activity.status")
+  printf '%s' "$activity" | grep -F $'phase8\tworking\tPhase 8 started' >/dev/null \
+    || fail "the current post-colon keyed working phase was not retained"
+  printf '%s' "$activity" | grep -F $'phase7\t' >/dev/null \
+    && fail "a post-colon keyed terminal event did not supersede its working phase"
   pass "classifier primitives: keyed decisions and activity phases, captain relevance, window-to-task, and overrides"
 }
 
