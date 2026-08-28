@@ -298,6 +298,58 @@ assert_rule_cross_references_resolve() {
   fi
 }
 
+# The escalation rule must SHOW the exact line a worker should write, key token
+# and all. When the scaffold only mentioned `[key=<slug>]` in passing, workers wrote
+# unkeyed `needs-decision:` lines, every decision on a task landed in one bucket,
+# and a second decision silently replaced the first.
+assert_keyed_decision_line_is_demonstrated() {  # <brief> <label>
+  local brief=$1 label=$2
+  assert_grep 'needs-decision [key=api-shape]: return 404 or 403 for a gated endpoint' "$brief" \
+    "$label: brief does not show the canonical keyed needs-decision line"
+  assert_grep 'resolved [key=api-shape]: {how it was decided or unblocked}' "$brief" \
+    "$label: brief does not show the canonical keyed resolution line"
+  assert_grep 'Give every distinct decision its own key' "$brief" \
+    "$label: brief does not require one key per distinct decision"
+  assert_grep 'a second unkeyed' "$brief" \
+    "$label: brief does not state what an unkeyed second decision costs"
+}
+
+test_escalation_rule_demonstrates_the_keyed_decision_line() {
+  local home id
+  home="$TMP_ROOT/keyed-decision-home"
+  mkdir -p "$home/data"
+
+  id="brief-keyed-ship"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1 \
+    || fail "ship brief scaffold exited non-zero"
+  assert_keyed_decision_line_is_demonstrated "$home/data/$id/brief.md" "ship"
+
+  id="brief-keyed-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1 \
+    || fail "scout brief scaffold exited non-zero"
+  assert_keyed_decision_line_is_demonstrated "$home/data/$id/brief.md" "scout"
+
+  id="brief-keyed-promote"
+  mkdir -p "$home/data/$id"
+  printf 'original scout brief\n' > "$home/data/$id/brief.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --promote >/dev/null 2>&1 \
+    || fail "--promote scaffold exited non-zero"
+  assert_keyed_decision_line_is_demonstrated "$home/data/$id/promote.md" "promote"
+
+  id="brief-keyed-charter"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Handle routed domain work.' \
+    "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate charter scaffold exited non-zero"
+  assert_grep 'needs-decision [key=<slug>]: {summary of options}' "$home/data/$id/brief.md" \
+    "secondmate charter does not show the canonical keyed needs-decision line"
+  assert_grep 'resolved [key=<slug>]: {how it was decided or unblocked}' "$home/data/$id/brief.md" \
+    "secondmate charter does not show the canonical keyed resolution line"
+  assert_grep 'unkeyed lines share one slot' "$home/data/$id/brief.md" \
+    "secondmate charter does not state what an unkeyed second decision costs"
+
+  pass "fm-brief.sh: the escalation rule demonstrates the canonical keyed decision line"
+}
+
 test_rule_cross_references_stay_pinned_to_their_rule() {
   local home id
   home="$TMP_ROOT/rule-xref-home"
@@ -852,6 +904,7 @@ test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_rule_cross_references_stay_pinned_to_their_rule
+test_escalation_rule_demonstrates_the_keyed_decision_line
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

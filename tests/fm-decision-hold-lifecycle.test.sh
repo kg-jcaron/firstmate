@@ -410,6 +410,65 @@ test_terminal_single_owner_status_decision_does_not_block_empty_inventory() {
   pass "terminal single-owner stale status decisions do not block empty inventory"
 }
 
+# The brief's canonical line puts the key token before the colon, but workers also
+# write it after the colon and both forms are already on disk. Two distinct
+# post-colon decisions used to collapse into one "default" record carrying only the
+# last one, which lost the first decision and then refused completion with
+# "open structured decision <origin>/default has no captain-held inventory entry".
+test_post_colon_keys_keep_two_decisions_distinct_through_completion() {
+  local home id volume_hold cert_hold open json
+  home=$(make_home post-colon-keys)
+  id=sample-sweep-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Sweep sample gated endpoints" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create sweep backlog fixture"
+  write_origin_meta "$home" "$id"
+  cat > "$home/state/$id.status" <<'EOF'
+needs-decision: [key=deletion-volume] delete the legacy sample rows or gate them
+needs-decision: [key=cert-grant] grant the sample cert scope now or defer it
+EOF
+  printf '# Sample sweep review\n\nTwo distinct captain choices remain.\n' > "$home/data/$id/report.md"
+
+  open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
+    "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
+  assert_contains "$open" $'deletion-volume\tneeds-decision\tdelete the legacy sample rows or gate them' \
+    "first post-colon keyed decision was dropped from the open set"
+  assert_contains "$open" $'cert-grant\tneeds-decision\tgrant the sample cert scope now or defer it' \
+    "second post-colon keyed decision was dropped from the open set"
+  case "$open" in
+    *$'default\t'*) fail "a post-colon key token still collapsed into the default bucket: $open" ;;
+  esac
+
+  if run_decisions "$home" complete "$id" --none > "$home/none.out" 2> "$home/none.err"; then
+    fail "completion succeeded while two post-colon decisions had no captain holds"
+  fi
+  volume_hold=$(run_decisions "$home" hold "$id" deletion-volume \
+    --title "Choose the sample deletion volume" --reason "captain deletion choice pending" --repo sample) \
+    || fail "could not register the deletion-volume hold"
+  cert_hold=$(run_decisions "$home" hold "$id" cert-grant \
+    --title "Choose the sample cert grant" --reason "captain cert choice pending" --repo sample) \
+    || fail "could not register the cert-grant hold"
+  [ "$volume_hold" != "$cert_hold" ] || fail "two distinct decisions shared one hold identity"
+
+  run_decisions "$home" complete "$id" deletion-volume cert-grant >/dev/null 2> "$home/complete.err" \
+    || fail "completion refused a post-colon keyed inventory: $(cat "$home/complete.err")"
+  assert_grep "decision_keys=cert-grant,deletion-volume" "$home/state/$id.meta" \
+    "post-colon keys were not recorded as two distinct inventory entries"
+  open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
+    "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
+  [ -z "$open" ] || fail "captain-held transfer did not close both post-colon decisions: $open"
+
+  json=$(run_bearings "$home") || fail "Bearings failed with post-colon captain holds"
+  printf '%s' "$json" | jq -e --arg volume "$volume_hold" --arg cert "$cert_hold" '
+    (.decisions_open | any(.id == $volume and .verb == "captain-hold"))
+      and (.decisions_open | any(.id == $cert and .verb == "captain-hold"))
+  ' >/dev/null || fail "Bearings lost one of the two post-colon captain holds: $json"
+
+  run_teardown "$home" "$id" >/dev/null 2> "$home/teardown.err" \
+    || fail "post-colon keyed investigation teardown failed: $(cat "$home/teardown.err")"
+  pass "two post-colon keyed decisions stay distinct through completion and teardown"
+}
+
 test_secondmate_hold_stays_in_authoritative_home() {
   local parent mate origin hold json
   parent=$(make_home main-routing)
@@ -558,5 +617,6 @@ test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
+test_post_colon_keys_keep_two_decisions_distinct_through_completion
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
